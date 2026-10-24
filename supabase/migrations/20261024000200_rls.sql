@@ -10,11 +10,16 @@
 -- ---------------------------------------------------------------------------
 -- claim helpers
 --
+-- These live in `public`, not `auth`: hosted Supabase owns the auth schema and
+-- denies CREATE FUNCTION there (verified -- it fails with "permission denied
+-- for schema auth"). Calling auth.uid() is still fine; defining into auth is
+-- not.
+--
 -- SECURITY DEFINER so that reading profiles from inside a profiles policy does
 -- not recurse. search_path is pinned to defeat search_path hijacking.
 -- ---------------------------------------------------------------------------
 
-create or replace function auth.current_org_id()
+create or replace function public.current_org_id()
 returns uuid
 language sql
 stable
@@ -24,7 +29,7 @@ as $$
   select org_id from public.profiles where id = auth.uid()
 $$;
 
-create or replace function auth.current_app_role()
+create or replace function public.current_app_role()
 returns public.app_role
 language sql
 stable
@@ -35,7 +40,7 @@ as $$
 $$;
 
 -- Charge nurses and admins see the whole org; nurses see only their patients.
-create or replace function auth.is_org_wide()
+create or replace function public.is_org_wide()
 returns boolean
 language sql
 stable
@@ -49,7 +54,7 @@ as $$
 $$;
 
 -- Is the caller currently assigned to this patient?
-create or replace function auth.is_assigned(target_patient uuid)
+create or replace function public.is_assigned(target_patient uuid)
 returns boolean
 language sql
 stable
@@ -86,20 +91,20 @@ alter table audit_log     enable row level security;
 
 create policy org_read_own on organizations
   for select to authenticated
-  using (id = auth.current_org_id());
+  using (id = public.current_org_id());
 
 create policy org_admin_update on organizations
   for update to authenticated
-  using (id = auth.current_org_id() and auth.current_app_role() = 'admin');
+  using (id = public.current_org_id() and public.current_app_role() = 'admin');
 
 create policy units_read_own_org on units
   for select to authenticated
-  using (org_id = auth.current_org_id());
+  using (org_id = public.current_org_id());
 
 create policy units_admin_write on units
   for all to authenticated
-  using (org_id = auth.current_org_id() and auth.current_app_role() = 'admin')
-  with check (org_id = auth.current_org_id() and auth.current_app_role() = 'admin');
+  using (org_id = public.current_org_id() and public.current_app_role() = 'admin')
+  with check (org_id = public.current_org_id() and public.current_app_role() = 'admin');
 
 -- ---------------------------------------------------------------------------
 -- profiles
@@ -109,17 +114,17 @@ create policy units_admin_write on units
 -- "acknowledged by" names, and the nurse app shows who is on shift.
 create policy profiles_read_own_org on profiles
   for select to authenticated
-  using (org_id = auth.current_org_id());
+  using (org_id = public.current_org_id());
 
 create policy profiles_update_self on profiles
   for update to authenticated
   using (id = auth.uid())
-  with check (id = auth.uid() and org_id = auth.current_org_id());
+  with check (id = auth.uid() and org_id = public.current_org_id());
 
 create policy profiles_admin_write on profiles
   for all to authenticated
-  using (org_id = auth.current_org_id() and auth.current_app_role() = 'admin')
-  with check (org_id = auth.current_org_id() and auth.current_app_role() = 'admin');
+  using (org_id = public.current_org_id() and public.current_app_role() = 'admin')
+  with check (org_id = public.current_org_id() and public.current_app_role() = 'admin');
 
 -- ---------------------------------------------------------------------------
 -- patients: org-wide for admin/charge_nurse, assignment-scoped for nurses
@@ -128,14 +133,14 @@ create policy profiles_admin_write on profiles
 create policy patients_read on patients
   for select to authenticated
   using (
-    org_id = auth.current_org_id()
-    and (auth.is_org_wide() or auth.is_assigned(id))
+    org_id = public.current_org_id()
+    and (public.is_org_wide() or public.is_assigned(id))
   );
 
 create policy patients_admin_write on patients
   for all to authenticated
-  using (org_id = auth.current_org_id() and auth.is_org_wide())
-  with check (org_id = auth.current_org_id() and auth.is_org_wide());
+  using (org_id = public.current_org_id() and public.is_org_wide())
+  with check (org_id = public.current_org_id() and public.is_org_wide());
 
 -- ---------------------------------------------------------------------------
 -- assignments
@@ -144,14 +149,14 @@ create policy patients_admin_write on patients
 create policy assignments_read on assignments
   for select to authenticated
   using (
-    org_id = auth.current_org_id()
-    and (auth.is_org_wide() or nurse_id = auth.uid())
+    org_id = public.current_org_id()
+    and (public.is_org_wide() or nurse_id = auth.uid())
   );
 
 create policy assignments_charge_write on assignments
   for all to authenticated
-  using (org_id = auth.current_org_id() and auth.is_org_wide())
-  with check (org_id = auth.current_org_id() and auth.is_org_wide());
+  using (org_id = public.current_org_id() and public.is_org_wide())
+  with check (org_id = public.current_org_id() and public.is_org_wide());
 
 -- ---------------------------------------------------------------------------
 -- vitals / risk_scores: read follows patient visibility, writes via API only
@@ -160,15 +165,15 @@ create policy assignments_charge_write on assignments
 create policy vitals_read on vitals
   for select to authenticated
   using (
-    org_id = auth.current_org_id()
-    and (auth.is_org_wide() or auth.is_assigned(patient_id))
+    org_id = public.current_org_id()
+    and (public.is_org_wide() or public.is_assigned(patient_id))
   );
 
 create policy risk_scores_read on risk_scores
   for select to authenticated
   using (
-    org_id = auth.current_org_id()
-    and (auth.is_org_wide() or auth.is_assigned(patient_id))
+    org_id = public.current_org_id()
+    and (public.is_org_wide() or public.is_assigned(patient_id))
   );
 
 -- ---------------------------------------------------------------------------
@@ -182,16 +187,16 @@ create policy risk_scores_read on risk_scores
 create policy worry_read on worry_signals
   for select to authenticated
   using (
-    org_id = auth.current_org_id()
-    and (auth.is_org_wide() or nurse_id = auth.uid())
+    org_id = public.current_org_id()
+    and (public.is_org_wide() or nurse_id = auth.uid())
   );
 
 create policy worry_nurse_insert on worry_signals
   for insert to authenticated
   with check (
-    org_id = auth.current_org_id()
+    org_id = public.current_org_id()
     and nurse_id = auth.uid()
-    and auth.is_assigned(patient_id)
+    and public.is_assigned(patient_id)
   );
 
 -- Deliberately no update/delete policy: a raised worry signal is immutable.
@@ -204,8 +209,8 @@ create policy worry_nurse_insert on worry_signals
 create policy escalations_read on escalations
   for select to authenticated
   using (
-    org_id = auth.current_org_id()
-    and (auth.is_org_wide() or auth.is_assigned(patient_id))
+    org_id = public.current_org_id()
+    and (public.is_org_wide() or public.is_assigned(patient_id))
   );
 
 -- Acknowledge/assess transitions go through the API so that timestamps are
@@ -213,8 +218,8 @@ create policy escalations_read on escalations
 -- worry-to-response metric meaningless.
 create policy escalations_charge_update on escalations
   for update to authenticated
-  using (org_id = auth.current_org_id() and auth.is_org_wide())
-  with check (org_id = auth.current_org_id() and auth.is_org_wide());
+  using (org_id = public.current_org_id() and public.is_org_wide())
+  with check (org_id = public.current_org_id() and public.is_org_wide());
 
 -- ---------------------------------------------------------------------------
 -- outcomes / audit_log
@@ -222,11 +227,11 @@ create policy escalations_charge_update on escalations
 
 create policy outcomes_read on outcomes
   for select to authenticated
-  using (org_id = auth.current_org_id() and auth.is_org_wide());
+  using (org_id = public.current_org_id() and public.is_org_wide());
 
 create policy audit_admin_read on audit_log
   for select to authenticated
-  using (org_id = auth.current_org_id() and auth.current_app_role() = 'admin');
+  using (org_id = public.current_org_id() and public.current_app_role() = 'admin');
 
 -- ---------------------------------------------------------------------------
 -- realtime: dashboard subscribes to these two tables

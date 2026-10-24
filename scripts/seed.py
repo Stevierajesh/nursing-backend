@@ -35,6 +35,10 @@ random.seed(42)  # reproducible demos
 ORG_SLUG = "mercy-general"
 DEMO_PASSWORD = "WorryLayer!2026"
 
+# .example, not .test: Supabase's email validator rejects the reserved .test
+# TLD with "email_address_invalid".
+EMAIL_DOMAIN = "mercygeneral.example"
+
 
 def iso(dt: datetime) -> str:
     return dt.isoformat()
@@ -420,19 +424,19 @@ def main() -> None:
 
     print("\nCreating users...")
     admin_id = create_user(
-        org_id, "admin@mercy.test", "Dana Whitmore", "admin", None
+        org_id, "admin@mercygeneral.example", "Dana Whitmore", "admin", None
     )
     charge_id = create_user(
-        org_id, "charge@mercy.test", "Priya Raghunathan", "charge_nurse", unit_ids[0]
+        org_id, "charge@mercygeneral.example", "Priya Raghunathan", "charge_nurse", unit_ids[0]
     )
     nurse1_id = create_user(
-        org_id, "maria@mercy.test", "Maria Santos", "nurse", unit_ids[0]
+        org_id, "maria@mercygeneral.example", "Maria Santos", "nurse", unit_ids[0]
     )
     nurse2_id = create_user(
-        org_id, "james@mercy.test", "James Okonkwo", "nurse", unit_ids[0]
+        org_id, "james@mercygeneral.example", "James Okonkwo", "nurse", unit_ids[0]
     )
     nurse3_id = create_user(
-        org_id, "lin@mercy.test", "Lin Zhao", "nurse", unit_ids[1]
+        org_id, "lin@mercygeneral.example", "Lin Zhao", "nurse", unit_ids[1]
     )
 
     print("\nCreating patients and vitals...")
@@ -465,12 +469,12 @@ def main() -> None:
 Done.
 
 Logins (password: {DEMO_PASSWORD})
-  admin@mercy.test    admin         -- org settings, equity audit
-  charge@mercy.test   charge_nurse  -- the dashboard
-  maria@mercy.test    nurse         -- the mobile app
+  admin@mercygeneral.example    admin         -- org settings, equity audit
+  charge@mercygeneral.example   charge_nurse  -- the dashboard
+  maria@mercygeneral.example    nurse         -- the mobile app
 
 Demo script:
-  1. Log into the nurse app as maria@mercy.test
+  1. Log into the nurse app as maria@mercygeneral.example
   2. Open Robert Ellis (rm 412). NEWS is 4 -- no existing system fires.
   3. Tap "Very worried" + "breathing off".
   4. Watch the dashboard escalate him live, with Maria's reason attached.

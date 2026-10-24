@@ -20,6 +20,7 @@ import atexit
 import logging
 import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -130,6 +131,11 @@ def start_scheduler() -> BackgroundScheduler | None:
         id="risk_recompute",
         max_instances=1,
         coalesce=True,
+        # Run once immediately instead of waiting out the first interval.
+        # Without this the board can sit for a full minute after boot showing
+        # unscored patients, and the API's live fallback has to carry every
+        # request in that window.
+        next_run_time=datetime.now(),
     )
     scheduler.start()
     atexit.register(lambda: scheduler.shutdown(wait=False))

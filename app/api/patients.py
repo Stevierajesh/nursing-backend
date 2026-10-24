@@ -83,7 +83,13 @@ def _latest_worry_map(patient_ids: list[str]) -> dict[str, dict]:
     return out
 
 
-def _latest_vitals_map(patient_ids: list[str]) -> dict[str, dict]:
+def _vitals_series_map(patient_ids: list[str]) -> dict[str, list[dict]]:
+    """Recent vitals per patient, newest first.
+
+    Returns the whole series rather than only the latest row, because the board
+    needs the trend slope to compute risk live for any patient the background
+    job has not scored yet. One query either way.
+    """
     if not patient_ids:
         return {}
     resp = (
@@ -92,43 +98,85 @@ def _latest_vitals_map(patient_ids: list[str]) -> dict[str, dict]:
         .select("*")
         .in_("patient_id", patient_ids)
         .order("recorded_at", desc=True)
+        .limit(max(len(patient_ids) * 25, 200))
+        .execute()
+    )
+    out: dict[str, list[dict]] = {}
+    for row in resp.data or []:
+        out.setdefault(row["patient_id"], []).append(row)
+    return out
+
+
+def _worry_series_map(patient_ids: list[str]) -> dict[str, list[dict]]:
+    """Recent worry signals per patient, newest first, for live risk fallback."""
+    if not patient_ids:
+        return {}
+    resp = (
+        supabase()
+        .table("worry_signals")
+        .select("*")
+        .in_("patient_id", patient_ids)
+        .order("created_at", desc=True)
         .limit(max(len(patient_ids) * 10, 100))
         .execute()
     )
-    out: dict[str, dict] = {}
+    out: dict[str, list[dict]] = {}
     for row in resp.data or []:
-        out.setdefault(row["patient_id"], row)
+        out.setdefault(row["patient_id"], []).append(row)
     return out
 
 
 def _decorate(patients: list[dict]) -> list[dict]:
-    """Attach risk, open escalation, latest worry and latest vitals."""
+    """Attach risk, open escalation, latest worry and latest vitals.
+
+    Risk comes from the most recent persisted `risk_scores` row when one
+    exists. When it does not -- a patient admitted since the last background
+    recompute -- it is computed live rather than defaulting to zero.
+
+    That fallback matters: defaulting to 0 renders an unscored, deteriorating
+    patient as the safest person on the board. Observed during verification,
+    where the seeded hero case displayed risk 0 against a NEWS slope of
+    +0.8/hr purely because the recompute had not reached him yet.
+    """
     ids = [p["id"] for p in patients]
     risks = _latest_risk_map(ids)
     escalations = _open_escalation_map(ids)
     worries = _latest_worry_map(ids)
-    vitals = _latest_vitals_map(ids)
+    vitals_series = _vitals_series_map(ids)
+    worry_series = _worry_series_map(ids)
 
     out = []
     for p in patients:
         pid = p["id"]
         risk = risks.get(pid)
         esc = escalations.get(pid)
-        latest_vitals = vitals.get(pid)
+        series = vitals_series.get(pid, [])
+        latest_vitals = series[0] if series else None
+
+        if risk is not None:
+            score = float(risk["score"])
+            components = {
+                "worry": float(risk["worry_component"]),
+                "vitals": float(risk["vitals_component"]),
+                "trend": float(risk["trend_component"]),
+            }
+            inputs = risk.get("inputs")
+        else:
+            live = compute_risk(series, worry_series.get(pid, []))
+            score = live.score
+            components = {
+                "worry": live.worry_component,
+                "vitals": live.vitals_component,
+                "trend": live.trend_component,
+            }
+            inputs = {**live.inputs, "computed": "live"}
+
         out.append(
             {
                 **p,
-                "risk_score": float(risk["score"]) if risk else 0.0,
-                "risk_components": (
-                    {
-                        "worry": float(risk["worry_component"]),
-                        "vitals": float(risk["vitals_component"]),
-                        "trend": float(risk["trend_component"]),
-                    }
-                    if risk
-                    else None
-                ),
-                "risk_inputs": risk.get("inputs") if risk else None,
+                "risk_score": score,
+                "risk_components": components,
+                "risk_inputs": inputs,
                 "latest_vitals": latest_vitals,
                 "latest_news": (
                     latest_vitals.get("news_score") if latest_vitals else None

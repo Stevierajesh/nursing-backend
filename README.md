@@ -21,6 +21,9 @@ python3 -m venv .venv
 cp .env.example .env     # fill in SUPABASE_URL and SUPABASE_SERVICE_KEY
 ```
 
+> The hosted database is **already migrated and seeded**. The commands below
+> are for a fresh project only — `seed.py` deletes and rebuilds the demo org.
+
 Apply the schema:
 
 ```bash
@@ -41,9 +44,57 @@ Seed the demo hospital:
 Run:
 
 ```bash
-.venv/bin/python run.py          # http://localhost:5001
-.venv/bin/python -m pytest -q    # 15 tests, no network needed
+make dev         # foreground, http://localhost:5001
+make start       # background
+make stop
+make restart
+make help        # all targets
 ```
+
+Tests:
+
+```bash
+make test        # 15 unit tests, no network needed
+make test-rls    # RLS policy attacks on a throwaway Postgres 16
+make test-all    # both
+```
+
+Confirm it is up before starting either frontend:
+
+```bash
+make health
+```
+
+`status: ok` with `database.reachable: true` means the service key works.
+`jwt_scheme` tells you which verification path is live — this project reports
+`asymmetric (JWKS)`, which is why `SUPABASE_JWT_SECRET` is correctly blank.
+
+### Demo accounts
+
+Password for all five: `WorryLayer!2026`
+
+| Email | Role |
+|---|---|
+| `admin@mercygeneral.example` | admin |
+| `charge@mercygeneral.example` | charge_nurse |
+| `maria@mercygeneral.example` | nurse |
+| `james@mercygeneral.example` | nurse |
+| `lin@mercygeneral.example` | nurse |
+
+Call the API as any of them:
+
+```bash
+make token ACCOUNT=maria     # print a raw access token
+make me ACCOUNT=charge       # GET /api/v1/me as that user
+
+# the token composes with curl for any endpoint
+curl -s localhost:5001/api/v1/dashboard/patients \
+  -H "Authorization: Bearer $(make token ACCOUNT=charge)"
+```
+
+`ACCOUNT` defaults to `charge`. It is deliberately not called `USER` — make
+inherits `USER` from the shell, so `make token` would silently try to
+authenticate as your login name.
 
 ## Auth
 
