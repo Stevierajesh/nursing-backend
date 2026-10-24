@@ -1,0 +1,15 @@
+Flask==3.1.0
+flask-cors==5.0.0
+python-dotenv==1.0.1
+supabase==2.11.0
+PyJWT[crypto]==2.10.1
+pydantic==2.10.4
+APScheduler==3.11.0
+gunicorn==23.0.0
+requests==2.32.3
+
+# dev
+pytest==8.3.4
+
+# migrations
+psycopg[binary]==3.2.3
