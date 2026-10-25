@@ -4,8 +4,17 @@ python-dotenv==1.0.1
 # >=2.33: 2.11 hard-rejects the new sb_secret_/sb_publishable_ key formats
 # with a client-side JWT regex check ("Invalid API key") before any request.
 supabase==2.33.0
-PyJWT[crypto]==2.10.1
-pydantic==2.10.4
+# These three pins had drifted from the installed tree and described a
+# combination nothing had ever run. The venv predates the supabase 2.33 bump
+# and already had the newer versions resolved, so `pip install` was a no-op
+# locally and the stale pins were never exercised -- they only surface on a
+# clean install, where pip fails with ResolutionImpossible. Both conflicts are
+# transitive deps of supabase 2.33.0 raising their floors:
+#   realtime 2.33.0      requires pydantic>=2.11.7   (pin said 2.10.4)
+#   supabase-auth 2.33.0 requires pyjwt>=2.12.0      (pin said 2.10.1)
+# The versions below are what the 113-test suite actually passes against.
+PyJWT[crypto]==2.15.1
+pydantic==2.14.1
 APScheduler==3.11.0
 gunicorn==23.0.0
 requests==2.32.3
@@ -13,5 +22,6 @@ requests==2.32.3
 # dev
 pytest==8.3.4
 
-# migrations
-psycopg[binary]==3.2.3
+# migrations. Same drift as above -- 3.3.6 is installed and used; 3.2.3 was
+# never run. No conflict either way, since nothing in the app imports it.
+psycopg[binary]==3.3.6
