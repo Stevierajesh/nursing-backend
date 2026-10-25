@@ -2,6 +2,23 @@
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from app.services.calibration import CURRENT_MODEL, sample_baseline
+
+
+class BaselineSampleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    seed: int = Field(default=42, strict=True, ge=0, le=2147483647)
+    age_band: Literal["all", "18-39", "40-64", "65-79", "80+"] = "all"
+    sex: Literal["all", "F", "M"] = "all"
+    model_version: str = CURRENT_MODEL
+
+
+class CalibrationProvenance(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    model_version: str
+    age_band: Literal["all", "18-39", "40-64", "65-79", "80+"]
+    sex: Literal["all", "F", "M"]
+    selected_group: str
 
 
 class BaselineVitals(BaseModel):
@@ -25,6 +42,7 @@ class SimulationConfig(BaseModel):
     scenario: Literal["stable", "respiratory_decline", "circulatory_decline", "recovery"] = "stable"
     health_context: str = Field(default="", max_length=1000)
     baseline: BaselineVitals = Field(default_factory=BaselineVitals)
+    calibration: CalibrationProvenance | None = None
     duration_minutes: int = Field(default=10, strict=True, ge=2, le=240)
     onset_minutes: int = Field(default=1, strict=True, ge=0, le=120)
     seed: int = Field(default=42, strict=True, ge=0, le=2147483647)
@@ -33,6 +51,10 @@ class SimulationConfig(BaseModel):
     def onset_before_end(self):
         if self.onset_minutes >= self.duration_minutes:
             raise ValueError("Deterioration onset must precede the end of the run")
+        if self.calibration:
+            sample = sample_baseline(self.seed, self.calibration.age_band, self.calibration.sex, self.calibration.model_version)
+            if sample["baseline"] != self.baseline.model_dump() or sample["calibration"] != self.calibration.model_dump():
+                raise ValueError("Baseline or seed changed after calibration. Sample from the dataset again, or use a manual baseline.")
         return self
 
 

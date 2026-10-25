@@ -4,6 +4,8 @@ Two timers:
 
   * sla_sweep -- flips un-responded escalations to auto_escalated. This is the
     closed loop, and the reason a worried nurse cannot be silently ignored.
+  * medication_sweep -- the same closed loop for medication review requests,
+    widening an unanswered one from its named prescriber to the whole pool.
   * risk_recompute -- refreshes fused risk for active patients so the board
     reflects new vitals even when nobody taps anything.
 
@@ -28,6 +30,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from app.config import Config
 from app.extensions import supabase
 from app.services.escalation import evaluate_patient, sweep_sla_breaches
+from app.services.medication import sweep_medication_review_breaches
 from app.services.simulation import simulation_tick
 
 log = logging.getLogger(__name__)
@@ -48,6 +51,20 @@ def sla_sweep() -> None:
         # A job that raises is a job APScheduler stops retrying cleanly; keep
         # the timer alive and surface the trace.
         log.exception("sla_sweep failed")
+
+
+def medication_sweep() -> None:
+    """Second level of the medication escalation, on the same timer as the first."""
+    try:
+        escalated = sweep_medication_review_breaches()
+        if escalated:
+            log.warning(
+                "Medication SLA breach: %d request(s) escalated: %s",
+                len(escalated),
+                [r["id"] for r in escalated],
+            )
+    except Exception:
+        log.exception("medication_sweep failed")
 
 
 def risk_recompute() -> None:
@@ -126,6 +143,14 @@ def start_scheduler() -> BackgroundScheduler | None:
         "interval",
         seconds=Config.SLA_SWEEP_SECONDS,
         id="sla_sweep",
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        medication_sweep,
+        "interval",
+        seconds=Config.SLA_SWEEP_SECONDS,
+        id="medication_sweep",
         max_instances=1,
         coalesce=True,
     )

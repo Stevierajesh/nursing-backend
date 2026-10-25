@@ -9,6 +9,7 @@ from app.auth.middleware import assert_nurse_assigned, assert_patient_in_org, re
 from app.extensions import supabase
 from app.schemas.requests import BedCreate, LocationUpdate, MedicationReviewCreate, MedicationReviewAction
 from app.services.escalation import recent_vitals
+from app.services.medication import sla_deadline_for
 
 bp = Blueprint('mobile', __name__, url_prefix='/api/v1')
 
@@ -113,7 +114,10 @@ def reviews():
     query=supabase().table('medication_reviews').select(
         '*, patient:patients(display_name, room, bed), suggested_class:medication_classes(label, source)'
     ).eq('org_id',user.org_id)
-    if user.role=='prescriber': query=query.eq('prescriber_id',user.id)
+    # A prescriber sees their own queue plus anything that escalated past its
+    # SLA: the second level is only real if the pool can actually see the row.
+    if user.role=='prescriber':
+        query=query.or_(f'prescriber_id.eq.{user.id},escalated_to.eq.{user.id},status.eq.escalated')
     elif user.role=='nurse':
         assigned=supabase().table('assignments').select('patient_id').eq('org_id',user.org_id).eq('nurse_id',user.id).is_('shift_end','null').execute().data or []
         ids=[a['patient_id'] for a in assigned]
@@ -142,7 +146,8 @@ def create_review():
             return jsonify(error='Medication class does not match the requested condition'),422
     vitals=recent_vitals(body.patient_id,limit=1)
     rows=supabase().table('medication_reviews').insert({**body.model_dump(),'org_id':g.user.org_id,
-        'requested_by':g.user.id,'vitals_snapshot':vitals[0] if vitals else {}}).execute().data or []
+        'requested_by':g.user.id,'vitals_snapshot':vitals[0] if vitals else {},
+        'sla_deadline':sla_deadline_for(g.user.org_id)}).execute().data or []
     if not rows: return jsonify(error='Could not send review request'),500
     audit('medication_review.requested','medication_review',rows[0]['id'],{'patient_id':body.patient_id,'prescriber_id':body.prescriber_id})
     return jsonify(review=rows[0]),201
@@ -157,15 +162,44 @@ def act_review(review_id):
     rows=supabase().table('medication_reviews').select('*').eq('id',review_id).eq('org_id',user.org_id).execute().data or []
     if not rows: return jsonify(error='Review request not found'),404
     row=rows[0]
+    DECISIONS={'approve':'approved','reject':'rejected','review':'reviewed'}
     if user.role=='prescriber':
-        if row['prescriber_id']!=user.id: return jsonify(error='This request is assigned to another prescriber'),403
+        # Once escalated the request belongs to the pool, so any prescriber in
+        # the org can answer it. Before that it is one named person's job.
+        if row['status']!='escalated' and row['prescriber_id']!=user.id:
+            return jsonify(error='This request is assigned to another prescriber'),403
     else:
         assert_nurse_assigned(row['patient_id'])
-        if body.action=='review': return jsonify(error='Only the assigned prescriber can complete this review'),403
-    if row['status']!='pending': return jsonify(error='This request is already closed'),409
-    update={'status':'reviewed' if body.action=='review' else 'dismissed','review_note':body.note,
-        'reviewed_at':datetime.now(timezone.utc).isoformat(),'reviewed_by':user.id}
-    changed=supabase().table('medication_reviews').update(update).eq('id',review_id).eq('org_id',user.org_id).eq('status','pending').execute().data or []
+        if body.action!='dismiss': return jsonify(error='Only a prescriber can decide this request'),403
+    # Both open states are actionable; an escalated request is still waiting.
+    if row['status'] not in ('pending','escalated'): return jsonify(error='This request is already closed'),409
+    now=datetime.now(timezone.utc).isoformat()
+
+    if body.action=='request_info':
+        # Stays open and keeps its deadline: the nurse may not reply, and an
+        # unanswered request must still reach a second prescriber on time.
+        update={'info_requested_at':now,'info_requested_by':user.id,'info_request_note':body.note}
+    elif body.action=='acknowledge':
+        # Deliberately does NOT stop the escalation clock. Acknowledging is "I
+        # have seen this", not an answer, and a request that was seen and then
+        # left undecided is precisely the failure the second level exists to
+        # catch. The row keeps its open status and still escalates on time.
+        if row.get('acknowledged_at'): return jsonify(error='This request is already acknowledged'),409
+        update={'acknowledged_at':now,'acknowledged_by':user.id}
+    else:
+        update={'status':DECISIONS.get(body.action,'dismissed'),'decision_note':body.note,
+            'decided_at':now,'decided_by':user.id,
+            # reviewed_at/reviewed_by predate the approval states; keep writing
+            # them so the dashboard's existing queries keep resolving.
+            'review_note':body.note,'reviewed_at':now,'reviewed_by':user.id}
+
+    if body.prescriptions is not None:
+        update['prescriptions'] = [item.model_dump() for item in body.prescriptions]
+        update['reviewed_sections'] = body.reviewed_sections
+
+    changed=supabase().table('medication_reviews').update(update).eq('id',review_id).eq(
+        'org_id',user.org_id).in_('status',['pending','escalated']).execute().data or []
     if not changed: return jsonify(error='This request was already changed. Refresh the queue.'),409
-    audit('medication_review.'+update['status'],'medication_review',review_id,{'note':body.note})
+    audit('medication_review.'+body.action,'medication_review',review_id,
+        {'note':body.note,'was_escalated':row['status']=='escalated'})
     return jsonify(review=changed[0])

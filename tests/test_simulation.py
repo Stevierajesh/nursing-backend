@@ -23,7 +23,17 @@ def test_stable_stays_close_to_baseline_and_never_generates_worry():
         assert not {'worry', 'worry_level', 'reasons'} & row.keys()
         assert row == observation(config, elapsed)
     assert observation(config, -10) == observation(config, 0)
-    assert observation(config, 9999) == observation(config, 600)
+
+    # Past the authored arc the patient keeps being observed. The trajectory
+    # holds -- still near baseline, still NEWS 0 -- but the readings must keep
+    # moving: a monitored bed that emits one identical row forever is a broken
+    # monitor, and this used to freeze because the variation clock was clamped
+    # to duration_minutes alongside the trajectory clock.
+    late = [observation(config, 9999 + i * 15) for i in range(20)]
+    assert all(abs(r['heart_rate'] - config.baseline.heart_rate) <= 2 for r in late)
+    assert all(r['news_score'] == 0 for r in late)
+    assert len({r['heart_rate'] for r in late}) > 1
+    assert observation(config, 9999) == observation(config, 9999)
 
 
 @pytest.mark.parametrize('scenario', ['respiratory_decline', 'circulatory_decline'])
@@ -110,3 +120,17 @@ def test_stable_simulation_plus_high_worry_does_not_alarm():
     rows = [{**observation(SimulationConfig(),0),'recorded_at':now}]
     result = compute_risk(rows,[{'level':4,'created_at':now}])
     assert not result.should_escalate
+
+
+def test_the_arc_holds_at_its_end_state_rather_than_resetting():
+    """A deteriorated patient must not quietly revert once the scenario ends."""
+    config = SimulationConfig(scenario='respiratory_decline', duration_minutes=10, onset_minutes=1)
+    end = observation(config, 10 * 60)
+    for elapsed in (11 * 60, 30 * 60, 6 * 3600):
+        later = observation(config, elapsed)
+        # Same deteriorated plateau, within the authored wobble.
+        assert abs(later['resp_rate'] - end['resp_rate']) <= 2
+        assert abs(later['spo2'] - end['spo2']) <= 2
+        assert later['news_score'] >= end['news_score'] - 1
+    # And it never drifts back toward the healthy baseline.
+    assert observation(config, 6 * 3600)['spo2'] < config.baseline.spo2 - 5

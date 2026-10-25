@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from flask import Blueprint, g, jsonify, request
 from pydantic import ValidationError
+from postgrest.exceptions import APIError
 
 from app.auth.jwt import AuthError
 from app.auth.middleware import (
@@ -13,12 +14,40 @@ from app.auth.middleware import (
     require_role,
 )
 from app.extensions import supabase
-from app.schemas.requests import VitalsCreate
+from app.schemas.requests import NurseNoteCreate, PatientAdmission, VitalsCreate
+from app.services.bands import pain_band
 from app.services.escalation import evaluate_patient, recent_vitals, recent_worry
-from app.services.news import news_band, news_score
+from app.services.news import news_alert, news_band, news_components, news_score
 from app.services.risk import RULE_LABELS, compute_risk
 
 bp = Blueprint("patients", __name__, url_prefix="/api/v1/patients")
+
+
+@bp.post("")
+@require_auth
+@require_role("nurse", "charge_nurse", "admin")
+def admit_patient():
+    try:
+        body = PatientAdmission.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return jsonify(error="Invalid patient details", details=exc.errors(include_context=False)), 422
+    try:
+        patient = supabase().rpc("admit_patient", {
+            "p_org": g.user.org_id, "p_actor": g.user.id,
+            "p_name": body.display_name, "p_unit": str(body.unit_id),
+            "p_bed": str(body.bed_id) if body.bed_id else None,
+        }).execute().data
+    except APIError as exc:
+        if exc.code == "23505":
+            return jsonify(error="This bed is already occupied. Choose another bed."), 409
+        if exc.code == "P0002":
+            return jsonify(error=exc.message), 404
+        if exc.code == "42501":
+            return jsonify(error="Insufficient permission"), 403
+        if exc.code in ("22023", "22P02"):
+            return jsonify(error=exc.message), 422
+        raise
+    return jsonify(patient=patient), 201
 
 
 def _latest_risk_map(patient_ids: list[str]) -> dict[str, dict]:
@@ -152,6 +181,7 @@ def _decorate(patients: list[dict]) -> list[dict]:
         esc = escalations.get(pid)
         series = vitals_series.get(pid, [])
         latest_vitals = series[0] if series else None
+        alert = news_alert(latest_vitals)
 
         if risk is not None:
             score = float(risk["score"])
@@ -178,14 +208,9 @@ def _decorate(patients: list[dict]) -> list[dict]:
                 "risk_components": components,
                 "risk_inputs": inputs,
                 "latest_vitals": latest_vitals,
-                "latest_news": (
-                    latest_vitals.get("news_score") if latest_vitals else None
-                ),
-                "news_band": (
-                    news_band(int(latest_vitals.get("news_score") or 0))
-                    if latest_vitals
-                    else "none"
-                ),
+                "news_alert": alert,
+                "latest_news": alert["score"],
+                "news_band": news_band(alert["score"]) if alert["score"] is not None else "none",
                 "latest_worry": worries.get(pid),
                 "open_escalation": esc,
                 "escalation_rule_label": (
@@ -215,8 +240,6 @@ def my_patients():
             .eq("org_id", user.org_id)
             .is_("discharged_at", "null")
         )
-        if user.unit_id:
-            query = query.eq("unit_id", user.unit_id)
         patients = (query.order("display_name").execute().data) or []
     else:
         assigned = (
@@ -275,15 +298,46 @@ def patient_detail(patient_id: str):
         .data
     ) or []
 
+    notes = (
+        supabase()
+        .table("nurse_notes")
+        .select("*, author:profiles(full_name)")
+        .eq("patient_id", patient_id)
+        .eq("org_id", user.org_id)
+        .order("recorded_at", desc=True)
+        .limit(20)
+        .execute()
+        .data
+    ) or []
+
+    risk_history = (
+        supabase().table("risk_scores").select("score,computed_at")
+        .eq("patient_id", patient_id).eq("org_id", user.org_id)
+        .order("computed_at", desc=True).limit(480).execute().data
+    ) or []
+
     # Computed live rather than read from risk_scores so the detail view always
     # reflects the newest vitals, even between background recomputes.
     result = compute_risk(vitals, worry)
+
+    # Per-parameter bands for the approval review's vitals cards. Sent from the
+    # backend so the thresholds live in exactly one place -- a second copy in
+    # TypeScript would drift, and the drifted copy is the one a clinician reads.
+    latest = vitals[0] if vitals else {}
+    components = news_components(latest)
+    pain = pain_band(latest.get("pain_score"))
+    if pain:
+        components["pain_score"] = pain
 
     return jsonify(
         {
             "patient": patient,
             # oldest-first for charting
             "vitals": list(reversed(vitals)),
+            "vital_bands": components,
+            "news_alert": news_alert(vitals[0] if vitals else None),
+            "nurse_notes": notes,
+            "risk_history": list(reversed(risk_history)),
             "worry_signals": worry,
             "escalations": [
                 {**e, "rule_label": RULE_LABELS.get(e["rule"], e["rule"])}
@@ -302,6 +356,40 @@ def patient_detail(patient_id: str):
             },
         }
     )
+
+
+@bp.post("/<patient_id>/notes")
+@require_auth
+@require_role("nurse", "charge_nurse", "admin")
+def add_note(patient_id: str):
+    """Chart a nurse note.
+
+    Prescriber-writable is deliberately omitted: section 4 of the approval
+    review is "what the nurse observed", and a doctor writing into it would
+    make the one section that carries bedside judgement untrustworthy.
+    """
+    try:
+        assert_patient_in_org(patient_id)
+        assert_nurse_assigned(patient_id)
+    except AuthError as exc:
+        return jsonify({"error": exc.message}), exc.status
+
+    try:
+        body = NurseNoteCreate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return jsonify({"error": "Invalid request", "details": exc.errors(include_context=False)}), 422
+
+    rows = (
+        supabase()
+        .table("nurse_notes")
+        .insert({"org_id": g.user.org_id, "patient_id": patient_id,
+                 "author_id": g.user.id, "body": body.body})
+        .execute()
+        .data
+    ) or []
+    if not rows:
+        return jsonify({"error": "Failed to record note"}), 500
+    return jsonify({"note": rows[0]}), 201
 
 
 @bp.post("/<patient_id>/vitals")

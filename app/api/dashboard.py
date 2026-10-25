@@ -49,7 +49,8 @@ def ranked_patients():
         }.get(esc["status"], 3) if esc else 4
         worry = p.get("latest_worry")
         worry_level = int(worry["level"]) if worry else 0
-        return (status_rank, -worry_level, -float(p.get("risk_score") or 0))
+        news_priority = {"high": 3, "medium": 2, "single_red": 2}.get((p.get("news_alert") or {}).get("band"), 0)
+        return (status_rank, -news_priority, -worry_level, -float(p.get("risk_score") or 0))
 
     decorated.sort(key=sort_key)
     return jsonify({"patients": decorated})

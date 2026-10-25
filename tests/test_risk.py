@@ -223,3 +223,36 @@ def test_worry_validation_accepts_exactly_five_integer_levels():
     for level in (-1, 5, 1.5, True, '2'):
         with pytest.raises(ValidationError):
             WorryCreate(patient_id='patient', level=level)
+
+
+def test_jerry_news_warning_is_independent_of_low_combined_score():
+    from app.services.news import news_alert
+    # The weighted model can be low while NEWS independently requires review.
+    observation = _vitals(0, heart_rate=181, resp_rate=24, systolic_bp=133)
+    result = compute_risk([observation], [])
+    assert result.score < 35
+    assert news_alert(observation) == {
+        "score": 5, "band": "medium", "single_red_parameters": ["heart_rate"]
+    }
+
+
+def test_single_red_parameter_is_not_hidden_by_low_news_total():
+    from app.services.news import news_alert
+    alert = news_alert(_vitals(0, heart_rate=140))
+    assert alert["score"] == 3
+    assert alert["band"] == "single_red"
+    assert alert["single_red_parameters"] == ["heart_rate"]
+
+
+def test_news_alert_high_and_missing_observations():
+    from app.services.news import news_alert
+    assert news_alert(_vitals(0, heart_rate=125, resp_rate=24, systolic_bp=80))["band"] == "high"
+    assert news_alert(None) == {"score": None, "band": "unknown", "single_red_parameters": []}
+    assert news_alert(_vitals(0))["band"] == "none"
+
+
+def test_news_alert_calculates_when_persisted_total_is_missing():
+    from app.services.news import news_alert
+    observation = _vitals(0, consciousness="V")
+    del observation["news_score"]
+    assert news_alert(observation) == {"score": 3, "band": "single_red", "single_red_parameters": ["consciousness"]}

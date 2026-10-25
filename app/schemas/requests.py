@@ -7,8 +7,9 @@ fails with a precise field error instead of a 500 three layers down.
 from __future__ import annotations
 
 from typing import Literal
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from app.schemas.simulation import SimulationConfig
 
 WORRY_REASONS = {
@@ -63,6 +64,9 @@ class VitalsCreate(BaseModel):
     systolic_bp: int | None = Field(default=None, ge=0, le=300)
     diastolic_bp: int | None = Field(default=None, ge=0, le=250)
     temperature_c: float | None = Field(default=None, ge=20.0, le=45.0)
+    # Numeric rating scale. Not a NEWS2 parameter: news_score ignores it, and
+    # it is banded separately in services/bands.py.
+    pain_score: int | None = Field(default=None, ge=0, le=10)
     supplemental_o2: bool = False
     consciousness: Literal["A", "V", "P", "U"] | None = "A"
 
@@ -142,6 +146,11 @@ class LocationUpdate(BaseModel):
     bed_id: str | None
 
 
+class NurseNoteCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    body: str = Field(min_length=1, max_length=4000)
+
+
 class MedicationReviewCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     patient_id: str
@@ -153,7 +162,43 @@ class MedicationReviewCreate(BaseModel):
     suggested_class_id: str | None = None
 
 
+class PrescriptionDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    medication: str = Field(min_length=1, max_length=200)
+    dose: str = Field(min_length=1, max_length=200)
+    route: str = Field(min_length=1, max_length=100)
+    frequency: str = Field(min_length=1, max_length=200)
+    duration: str = Field(min_length=1, max_length=200)
+    instructions: str = Field(default="", max_length=2000)
+
+
 class MedicationReviewAction(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    action: Literal["review", "dismiss"]
+    # approve/reject are the prescriber's clinical decision on the class the
+    # nurse suggested. acknowledge ("I have seen this") and request_info ("I
+    # need something before I can answer") both leave the request open and
+    # neither pauses the escalation clock.
+    # "review" is the legacy two-state action, kept so existing clients and the
+    # dashboard keep working; new callers should send approve or reject.
+    action: Literal["approve", "reject", "acknowledge", "request_info", "review", "dismiss"]
     note: str = Field(min_length=1, max_length=2000)
+    prescriptions: list[PrescriptionDraft] | None = Field(default=None, min_length=1, max_length=20)
+    reviewed_sections: list[int] | None = None
+
+    @model_validator(mode="after")
+    def validate_prescription_decision(self):
+        if self.prescriptions is not None:
+            if self.action != "approve":
+                raise ValueError("Prescription details can only be saved with approval")
+            if self.reviewed_sections is None or sorted(self.reviewed_sections) != list(range(8)):
+                raise ValueError("Review all eight sections before approving prescriptions")
+        elif self.reviewed_sections is not None:
+            raise ValueError("Section confirmations require prescription details")
+        return self
+
+
+class PatientAdmission(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    display_name: str = Field(min_length=1, max_length=200)
+    unit_id: UUID
+    bed_id: UUID | None = None

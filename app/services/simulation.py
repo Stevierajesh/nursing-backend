@@ -25,13 +25,24 @@ def observation(config: SimulationConfig, elapsed_seconds: float) -> dict:
     """A smooth trajectory with bounded correlated variation; time is real time.
 
     Baseline is the starting point except in recovery, where it is the target.
+    A baseline can be sampled from a versioned empirical calibration model and
+    saved in config. The temporal wobble and shifts below remain authored:
+    the calibration source has no repeated patient observations to fit them.
     These are authored scenarios, not disease or treatment-effect models.
+
+    Two clocks, deliberately. `arc` saturates at duration_minutes and drives the
+    trajectory, so once a scenario has played out the patient *holds* at its end
+    state rather than resetting or looping. `elapsed_seconds` runs unbounded and
+    drives the variation, so a held patient keeps producing moving observations
+    instead of one frozen reading forever. Clamping both -- which is what this
+    did before -- is why finished runs went silent.
     """
-    elapsed = max(0.0, min(elapsed_seconds, config.duration_minutes * 60))
+    arc = max(0.0, min(elapsed_seconds, config.duration_minutes * 60))
     onset = config.onset_minutes * 60
-    progress = max(0.0, min(1.0, (elapsed - onset) / (config.duration_minutes * 60 - onset)))
+    progress = max(0.0, min(1.0, (arc - onset) / (config.duration_minutes * 60 - onset)))
     progress = progress * progress * (3 - 2 * progress)
     # Smooth variation is deterministic across workers and process restarts.
+    elapsed = max(0.0, elapsed_seconds)
     phase = config.seed * 0.173
     variation = math.sin(elapsed / 43 + phase) * 0.65 + math.sin(elapsed / 97 + phase) * 0.35
     severity = (1 - progress) if config.scenario == "recovery" else progress

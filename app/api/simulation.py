@@ -5,7 +5,8 @@ from pydantic import ValidationError
 
 from app.auth.middleware import assert_patient_in_org, require_auth, require_role
 from app.extensions import supabase
-from app.schemas.simulation import SimulationAction, SimulationConfig
+from app.schemas.simulation import SimulationAction, SimulationConfig, BaselineSampleRequest
+from app.services.calibration import model_metadata, sample_baseline
 from app.services.simulation import SCENARIOS, observation, tick_patient
 
 bp = Blueprint("simulation", __name__, url_prefix="/api/v1/simulations")
@@ -30,6 +31,26 @@ def validate(model):
         return model.model_validate(request.get_json(silent=True) or {}), None
     except ValidationError as exc:
         return None, (jsonify(error="Invalid simulation configuration", details=exc.errors(include_context=False)), 422)
+
+
+@bp.get("/calibration")
+@require_auth
+@require_role("admin", "charge_nurse")
+def calibration_metadata():
+    return jsonify(model_metadata())
+
+
+@bp.post("/calibration/sample")
+@require_auth
+@require_role("admin", "charge_nurse")
+def calibration_sample():
+    body, err = validate(BaselineSampleRequest)
+    if err:
+        return err
+    try:
+        return jsonify(sample_baseline(body.seed, body.age_band, body.sex, body.model_version))
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 422
 
 
 @bp.get("")
