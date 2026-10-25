@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from app.services.news import news_band, news_score
+from app.services.news import news_alert, news_band, news_score
 
 # ---------------------------------------------------------------------------
 # tunable priors
@@ -48,9 +48,26 @@ W_WORRY = 0.25
 NEWS_PAIRING_THRESHOLD = 5  # NEWS medium band
 NEWS_HIGH_THRESHOLD = 7  # NEWS high band -- escalates on its own
 
+# NOTE ON SCALES -- read before "fixing" a low score on a very sick patient.
+#
+# The fused score and NEWS are two independent channels, deliberately. The
+# fusion weights vitals at 0.45, so vitals alone top out at 45/100 and no
+# patient reaches the red band on observations however bad they are. The trend
+# term measures *change*, not severity, so a patient who crashes and then stays
+# crashed has a flat slope and decays to ~19/100.
+#
+# That is correct for an experimental score whose whole purpose is to be
+# compared against NEWS2 -- flooring it by NEWS would launder the comparator
+# into the thing being measured. The safety net is `news_alert()`, which every
+# surface showing a risk score must also show. A fused score is never, on its
+# own, sufficient information about a patient.
+
 
 @dataclass
 class RiskResult:
+    #: The fusion, and only the fusion. Never floored or clamped by NEWS -- see
+    #: the note on scales above. This number alone is not enough to judge a
+    #: patient; it must always be shown next to `news_alert`.
     score: float
     worry_component: float
     vitals_component: float
@@ -61,6 +78,9 @@ class RiskResult:
     worry_level: int
     should_escalate: bool
     rule: str | None
+    #: The independent NEWS2 safety net: {score, band, single_red_parameters}.
+    #: Any surface rendering `score` is expected to render this too.
+    news_alert: dict[str, Any] = field(default_factory=dict)
     inputs: dict[str, Any] = field(default_factory=dict)
 
 
@@ -167,7 +187,7 @@ def worry_component(worry_rows: list[dict[str, Any]]) -> tuple[float, int]:
 
 
 def _decide_escalation(
-    worry_level: int, latest_news: int, slope: float
+    worry_level: int, latest_news: int, slope: float, single_red: list[str] | None = None
 ) -> tuple[bool, str | None]:
     """Decide whether this patient state warrants paging the charge nurse.
 
@@ -181,6 +201,14 @@ def _decide_escalation(
     # augments the existing safety net, it does not replace it.
     if latest_news >= NEWS_HIGH_THRESHOLD:
         return True, "news_high"
+
+    # RCP NEWS2 2017 defines a second trigger alongside the aggregate: any
+    # *single* parameter scoring 3 warrants urgent review on its own. Without
+    # this, the aggregate's per-parameter cap hides a collapsing patient --
+    # systolic 89, 68 and 45 all score 3, so a profound shock can sit on an
+    # aggregate of 5 and never escalate.
+    if single_red:
+        return True, "news_single_red"
 
     # The core pairing rules.
     if worry_level >= 4 and drifting:
@@ -221,9 +249,15 @@ def compute_risk(
     w_comp, worry_level = worry_component(worry_rows)
 
     score = 100.0 * (W_VITALS * v_comp + W_TREND * t_comp + W_WORRY * w_comp)
-    should_escalate, rule = _decide_escalation(worry_level, latest_news, slope)
+
+    # Carried on the result so every caller gets the safety net alongside the
+    # experiment without having to remember to call news_alert() itself.
+    alert = news_alert(latest)
+    single_red = alert["single_red_parameters"]
+    should_escalate, rule = _decide_escalation(worry_level, latest_news, slope, single_red)
 
     return RiskResult(
+        news_alert=alert,
         score=round(score, 2),
         worry_component=round(100.0 * W_WORRY * w_comp, 2),
         vitals_component=round(100.0 * W_VITALS * v_comp, 2),
@@ -242,6 +276,7 @@ def compute_risk(
             "vitals_observations": len(vitals_rows),
             "worry_signals": len(worry_rows),
             "weights": {"vitals": W_VITALS, "trend": W_TREND, "worry": W_WORRY},
+            "single_red_parameters": single_red,
         },
     )
 
@@ -249,6 +284,7 @@ def compute_risk(
 # Human-readable rule descriptions for the dashboard.
 RULE_LABELS = {
     "news_high": "NEWS in high band (≥7)",
+    "news_single_red": "A single NEWS parameter scoring 3",
     "very_worried_plus_drift": "Nurse very worried + NEWS drifting upward",
     "very_worried_plus_news": "Nurse very worried + NEWS ≥5",
     "worried_plus_drift_and_news": "Nurse worried + NEWS ≥5 and drifting",

@@ -7,11 +7,17 @@ tests worth having.
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from app.services.news import news_band, news_score
 from app.services.risk import (
     NEWS_PAIRING_THRESHOLD,
+    W_TREND,
+    W_VITALS,
     compute_risk,
     news_slope,
+    trend_component,
+    vitals_component,
 )
 
 
@@ -256,3 +262,52 @@ def test_news_alert_calculates_when_persisted_total_is_missing():
     observation = _vitals(0, consciousness="V")
     del observation["news_score"]
     assert news_alert(observation) == {"score": 3, "band": "single_red", "single_red_parameters": ["consciousness"]}
+
+
+def test_single_red_parameter_escalates_without_worry_or_an_upward_trend():
+    """RCP NEWS2's second trigger: one parameter at 3 warrants urgent review.
+
+    Without this the aggregate's per-parameter cap hides a collapsing patient --
+    systolic 89, 68 and 45 all score 3, so a profound shock sits on an
+    aggregate of 5 and, with no nurse worry recorded, escalates to nobody.
+    """
+    shock = [_vitals(m, systolic_bp=68, diastolic_bp=53, heart_rate=121, resp_rate=20)
+             for m in range(0, 60, 5)]
+    result = compute_risk(shock, [])
+    assert result.latest_news == 5
+    assert result.news_alert["single_red_parameters"] == ["systolic_bp"]
+    assert result.should_escalate and result.rule == "news_single_red"
+
+
+def test_sustained_shock_still_escalates_once_the_trend_goes_flat():
+    """Trend measures change, not severity: crashed-and-stable must not go quiet."""
+    flat = [_vitals(m, systolic_bp=70, diastolic_bp=54, heart_rate=123, resp_rate=20)
+            for m in range(0, 240, 10)]
+    result = compute_risk(flat, [])
+    assert result.trend_slope == pytest.approx(0.0, abs=0.05)
+    assert result.trend_component == 0.0
+    assert result.should_escalate and result.rule == "news_single_red"
+
+
+def test_the_fused_score_is_never_floored_by_news():
+    """The two scales stay independent, or the comparator leaks into the experiment.
+
+    Flooring `score` by NEWS would make "does nurse worry beat NEWS2?"
+    unanswerable, because NEWS2 would be inside both sides of the comparison.
+    The safety net is news_alert plus the escalation rules, not a clamp.
+    """
+    shock = [_vitals(m, systolic_bp=68, heart_rate=121) for m in range(0, 60, 5)]
+    result = compute_risk(shock, [])
+    expected = 100.0 * (
+        W_VITALS * vitals_component(result.latest_news)
+        + W_TREND * trend_component(result.trend_slope)
+    )
+    assert result.score == pytest.approx(expected, abs=0.01)
+    assert result.score < 35  # still "low" on the experimental scale
+
+
+def test_a_well_patient_is_untouched_by_the_single_red_rule():
+    calm = [_vitals(m) for m in range(0, 60, 5)]
+    result = compute_risk(calm, [])
+    assert result.news_alert["single_red_parameters"] == []
+    assert not result.should_escalate
