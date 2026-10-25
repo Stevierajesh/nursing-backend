@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from app.auth.jwt import AuthError
 from app.auth.middleware import (
     assert_patient_in_org,
+    assert_nurse_assigned,
     require_auth,
     require_role,
 )
@@ -72,7 +73,6 @@ def _latest_worry_map(patient_ids: list[str]) -> dict[str, dict]:
         .table("worry_signals")
         .select("*, nurse:profiles!worry_signals_nurse_id_fkey(id, full_name)")
         .in_("patient_id", patient_ids)
-        .gt("level", 0)
         .order("created_at", desc=True)
         .limit(max(len(patient_ids) * 5, 50))
         .execute()
@@ -252,6 +252,7 @@ def patient_detail(patient_id: str):
     """Full detail: vitals series, worry timeline, escalation history."""
     try:
         patient = assert_patient_in_org(patient_id)
+        assert_nurse_assigned(patient_id)
     except AuthError as exc:
         return jsonify({"error": exc.message}), exc.status
 
@@ -314,6 +315,7 @@ def add_vitals(patient_id: str):
     """
     try:
         assert_patient_in_org(patient_id)
+        assert_nurse_assigned(patient_id)
     except AuthError as exc:
         return jsonify({"error": exc.message}), exc.status
 
@@ -322,7 +324,7 @@ def add_vitals(patient_id: str):
     try:
         body = VitalsCreate.model_validate(payload)
     except ValidationError as exc:
-        return jsonify({"error": "Invalid request", "details": exc.errors()}), 422
+        return jsonify({"error": "Invalid request", "details": exc.errors(include_context=False)}), 422
 
     user = g.user
     row = body.model_dump(exclude_none=True)

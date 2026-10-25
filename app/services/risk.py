@@ -152,8 +152,8 @@ def worry_component(worry_rows: list[dict[str, Any]]) -> tuple[float, int]:
             continue
         age_minutes = (now - _parse_ts(row["created_at"])).total_seconds() / 60.0
         decay = 0.5 ** (age_minutes / WORRY_HALF_LIFE_MINUTES)
-        # level 1 -> 0.5, level 2 -> 1.0
-        intensity = (level / 2.0) * decay
+        # Five levels: 0=none, 1=slightly, 2=somewhat, 3=worried, 4=very.
+        intensity = (level / 4.0) * decay
         if intensity > best:
             best = intensity
         peak_level = max(peak_level, level)
@@ -183,9 +183,9 @@ def _decide_escalation(
         return True, "news_high"
 
     # The core pairing rules.
-    if worry_level >= 2 and drifting:
+    if worry_level >= 4 and drifting:
         return True, "very_worried_plus_drift"
-    if worry_level >= 2 and latest_news >= NEWS_PAIRING_THRESHOLD:
+    if worry_level >= 4 and latest_news >= NEWS_PAIRING_THRESHOLD:
         return True, "very_worried_plus_news"
     if worry_level >= 1 and drifting and latest_news >= NEWS_PAIRING_THRESHOLD:
         return True, "worried_plus_drift_and_news"

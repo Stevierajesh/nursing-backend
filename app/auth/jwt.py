@@ -93,6 +93,7 @@ def verify_token(token: str) -> dict:
                 signing_key,
                 algorithms=["RS256", "ES256"],
                 audience=Config.JWT_AUDIENCE,
+                leeway=Config.JWT_LEEWAY_SECONDS,
                 options={"require": ["exp", "sub"]},
             )
         elif alg == "HS256":
@@ -105,6 +106,7 @@ def verify_token(token: str) -> dict:
                 Config.SUPABASE_JWT_SECRET,
                 algorithms=["HS256"],
                 audience=Config.JWT_AUDIENCE,
+                leeway=Config.JWT_LEEWAY_SECONDS,
                 options={"require": ["exp", "sub"]},
             )
         else:
@@ -114,6 +116,14 @@ def verify_token(token: str) -> dict:
         raise AuthError("Token expired") from exc
     except jwt.InvalidAudienceError as exc:
         raise AuthError("Token audience mismatch") from exc
+    except jwt.ImmatureSignatureError as exc:
+        # Past JWT_LEEWAY_SECONDS of skew this is a host clock problem, not a
+        # bad token. Say so, because the default message ("not yet valid")
+        # sends you looking at the frontend instead of at `timedatectl`.
+        raise AuthError(
+            f"Token is not yet valid: this host's clock is more than "
+            f"{Config.JWT_LEEWAY_SECONDS}s behind the token issuer. Check NTP."
+        ) from exc
     except jwt.PyJWTError as exc:
         raise AuthError(f"Token verification failed: {exc}") from exc
 

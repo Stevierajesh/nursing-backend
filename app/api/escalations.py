@@ -10,7 +10,7 @@ from __future__ import annotations
 from flask import Blueprint, g, jsonify, request
 from pydantic import ValidationError
 
-from app.auth.middleware import require_auth, require_role
+from app.auth.middleware import require_auth, require_role, assert_nurse_assigned
 from app.extensions import supabase
 from app.schemas.requests import EscalationAction
 from app.services import escalation as svc
@@ -18,12 +18,21 @@ from app.services import escalation as svc
 bp = Blueprint("escalations", __name__, url_prefix="/api/v1/escalations")
 
 
+def _authorize_response(escalation_id):
+    rows = supabase().table("escalations").select("patient_id").eq("id", escalation_id).eq("org_id", g.user.org_id).execute().data or []
+    if not rows:
+        return jsonify({"error": "Escalation not found"}), 404
+    assert_nurse_assigned(rows[0]["patient_id"])
+    return None
+
+
+
 def _body() -> tuple[EscalationAction | None, tuple | None]:
     try:
         return EscalationAction.model_validate(request.get_json(silent=True) or {}), None
     except ValidationError as exc:
         return None, (
-            jsonify({"error": "Invalid request", "details": exc.errors()}),
+            jsonify({"error": "Invalid request", "details": exc.errors(include_context=False)}),
             422,
         )
 
@@ -44,9 +53,11 @@ def _audit(action: str, escalation_id: str, payload: dict) -> None:
 
 @bp.post("/<escalation_id>/acknowledge")
 @require_auth
-@require_role("charge_nurse", "admin")
+@require_role("nurse", "charge_nurse", "admin")
 def acknowledge(escalation_id: str):
     user = g.user
+    err = _authorize_response(escalation_id)
+    if err: return err
     row = svc.acknowledge(escalation_id, user.org_id, user.id)
     if row is None:
         return jsonify({"error": "Escalation not found"}), 404
@@ -57,13 +68,15 @@ def acknowledge(escalation_id: str):
 
 @bp.post("/<escalation_id>/assess")
 @require_auth
-@require_role("charge_nurse", "admin")
+@require_role("nurse", "charge_nurse", "admin")
 def assess(escalation_id: str):
     body, err = _body()
     if err:
         return err
 
     user = g.user
+    err = _authorize_response(escalation_id)
+    if err: return err
     row = svc.assess(escalation_id, user.org_id, user.id, body.note)
     if row is None:
         return jsonify({"error": "Escalation not found"}), 404
@@ -108,4 +121,5 @@ def get_escalation(escalation_id: str):
     rows = resp.data or []
     if not rows:
         return jsonify({"error": "Escalation not found"}), 404
+    assert_nurse_assigned(rows[0]["patient_id"])
     return jsonify({"escalation": rows[0]})

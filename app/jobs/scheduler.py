@@ -28,6 +28,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from app.config import Config
 from app.extensions import supabase
 from app.services.escalation import evaluate_patient, sweep_sla_breaches
+from app.services.simulation import simulation_tick
 
 log = logging.getLogger(__name__)
 
@@ -116,6 +117,10 @@ def start_scheduler() -> BackgroundScheduler | None:
         return None
 
     scheduler = BackgroundScheduler(daemon=True)
+    scheduler.add_job(
+        simulation_tick, "interval", seconds=5, id="simulation_tick",
+        max_instances=1, coalesce=True,
+    )
     scheduler.add_job(
         sla_sweep,
         "interval",

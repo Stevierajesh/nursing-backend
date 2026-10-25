@@ -20,7 +20,7 @@ from flask import g, jsonify, request
 from app.auth.jwt import AuthError, verify_token
 from app.extensions import profile_cache, supabase
 
-ROLES = ("admin", "charge_nurse", "nurse")
+ROLES = ("admin", "charge_nurse", "nurse", "prescriber")
 
 
 @dataclass(frozen=True)
@@ -35,7 +35,7 @@ class CurrentUser:
     @property
     def is_org_wide(self) -> bool:
         """Admins and charge nurses see the whole org; nurses see their own."""
-        return self.role in ("admin", "charge_nurse")
+        return self.role in ("admin", "charge_nurse", "prescriber")
 
 
 def _bearer_token() -> str:

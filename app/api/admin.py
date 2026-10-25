@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from flask import Blueprint, g, jsonify, request
 from pydantic import ValidationError
+from postgrest.exceptions import APIError
 
 from app.auth.middleware import require_auth, require_role
 from app.extensions import profile_cache, supabase
@@ -26,7 +27,7 @@ def _validate(model, payload=None):
         return model.model_validate(payload or request.get_json(silent=True) or {}), None
     except ValidationError as exc:
         return None, (
-            jsonify({"error": "Invalid request", "details": exc.errors()}),
+            jsonify({"error": "Invalid request", "details": exc.errors(include_context=False)}),
             422,
         )
 
@@ -208,8 +209,8 @@ def update_user(user_id: str):
     if not update:
         return jsonify({"error": f"No updatable fields. Allowed: {sorted(allowed)}"}), 422
 
-    if update.get("role") not in (None, "admin", "charge_nurse", "nurse"):
-        return jsonify({"error": "role must be admin, charge_nurse, or nurse"}), 422
+    if update.get("role") not in (None, "admin", "charge_nurse", "nurse", "prescriber"):
+        return jsonify({"error": "role must be admin, charge_nurse, nurse, or prescriber"}), 422
 
     rows = (
         supabase()
@@ -239,10 +240,23 @@ def create_patient():
     if err:
         return err
     user = g.user
+    if body.simulation is not None:
+        try:
+            data = supabase().rpc("create_simulation_patient", {
+                "p_org": user.org_id, "p_actor": user.id,
+                "p_patient": body.model_dump(exclude={"simulation", "nurse_id"}, exclude_none=True),
+                "p_config": body.simulation.model_dump(), "p_nurse": body.nurse_id,
+            }).execute().data
+        except APIError as exc:
+            from app.api.simulation import database_error
+            return database_error(exc)
+        return jsonify(data), 201
+    if body.nurse_id is not None:
+        return jsonify(error="An initial nurse assignment currently requires a simulation profile"), 422
     rows = (
         supabase()
         .table("patients")
-        .insert({**body.model_dump(exclude_none=True), "org_id": user.org_id})
+        .insert({**body.model_dump(exclude={"simulation", "nurse_id"}, exclude_none=True), "org_id": user.org_id})
         .execute()
     ).data or []
     return jsonify({"patient": rows[0] if rows else None}), 201

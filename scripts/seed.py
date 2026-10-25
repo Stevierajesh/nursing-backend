@@ -155,6 +155,7 @@ def create_patient(org_id: str, unit_id: str, spec: dict) -> str:
                 "mrn_hash": spec["mrn"],
                 "display_name": spec["name"],
                 "room": spec["room"],
+                "bed": {"412":"12","408":"8","415":"15","403":"3","410":"10","601":"1","604":"4","607":"7"}[spec["room"]],
                 "age_band": spec["age_band"],
                 "sex": spec["sex"],
                 "race_code": spec["race_code"],
@@ -164,6 +165,7 @@ def create_patient(org_id: str, unit_id: str, spec: dict) -> str:
         )
         .execute()
     ).data[0]
+    supabase().table("unit_beds").upsert({"org_id":org_id,"unit_id":unit_id,"room":row["room"],"bed":row["bed"]},on_conflict="org_id,unit_id,bed").execute()
     return row["id"]
 
 
@@ -328,7 +330,7 @@ def seed_history(
         for _ in range(random.randint(1, 3)):
             pid = random.choice(patient_ids)
             nurse = random.choice(nurse_ids)
-            level = random.choice([1, 2, 2])
+            level = random.choice([1, 2, 3, 4, 4])
             triggered = now() - timedelta(days=day, hours=random.randint(0, 20))
 
             worry_rows.append(
@@ -438,6 +440,8 @@ def main() -> None:
     nurse3_id = create_user(
         org_id, "lin@mercygeneral.example", "Lin Zhao", "nurse", unit_ids[1]
     )
+
+    create_user(org_id, "prescriber@mercygeneral.example", "Dr. Avery Morgan", "prescriber", unit_ids[0])
 
     print("\nCreating patients and vitals...")
     patient_ids: list[str] = []

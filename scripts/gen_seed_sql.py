@@ -209,6 +209,9 @@ def emit() -> None:
     out("left join units un on un.name = v.unit_name and un.org_id = (select id from organizations where slug = 'mercy-general');")
     out("")
 
+    out("update patients set bed = case room when '412' then '12' when '408' then '8' when '415' then '15' when '403' then '3' when '410' then '10' when '601' then '1' when '604' then '4' when '607' then '7' end where org_id=(select id from organizations where slug='mercy-general');")
+    out("insert into unit_beds (org_id,unit_id,room,bed) select org_id,unit_id,room,bed from patients where bed is not null and org_id=(select id from organizations where slug='mercy-general') on conflict (org_id,unit_id,bed) do nothing;")
+
     # --- vitals ------------------------------------------------------------
     out("-- vitals, with news_score precomputed by app/services/news.py")
     out("insert into vitals (org_id, patient_id, recorded_at, heart_rate, resp_rate,")
@@ -277,7 +280,7 @@ def emit() -> None:
         for _ in range(random.randint(1, 3)):
             p = random.choice(PATIENTS)
             nurse = random.choice(nurse_handles)
-            level = random.choice([1, 2, 2])
+            level = random.choice([1, 2, 3, 4, 4])
             trig_min = day * 1440 + random.randint(0, 1200)
 
             lang = lang_by_mrn[p["mrn"]]

@@ -21,8 +21,10 @@ so re-running only applies what is new.
 from __future__ import annotations
 
 import os
+import argparse
 import sys
 from pathlib import Path
+from dotenv import load_dotenv
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "supabase" / "migrations"
 
@@ -34,15 +36,17 @@ create table if not exists _migrations (
 """
 
 
-def migration_files() -> list[Path]:
+def migration_files(only: str | None = None) -> list[Path]:
     files = sorted(MIGRATIONS_DIR.glob("*.sql"))
+    if only:
+        files = [f for f in files if f.name == only]
     if not files:
         sys.exit(f"No .sql files found in {MIGRATIONS_DIR}")
     return files
 
 
-def print_combined() -> None:
-    files = migration_files()
+def print_combined(only: str | None = None) -> None:
+    files = migration_files(only)
     print("-- Nurse Worry Layer: combined migrations")
     print("-- Paste into Supabase dashboard -> SQL Editor -> New query\n")
     for f in files:
@@ -52,7 +56,7 @@ def print_combined() -> None:
         print(f.read_text())
 
 
-def apply_with_psycopg(database_url: str) -> None:
+def apply_with_psycopg(database_url: str, only: str | None = None) -> None:
     try:
         import psycopg
     except ImportError:
@@ -62,7 +66,7 @@ def apply_with_psycopg(database_url: str) -> None:
             "or run with --print and paste the SQL into the dashboard."
         )
 
-    files = migration_files()
+    files = migration_files(only)
 
     with psycopg.connect(database_url, autocommit=False) as conn:
         with conn.cursor() as cur:
@@ -98,10 +102,15 @@ def apply_with_psycopg(database_url: str) -> None:
 
 
 def main() -> None:
-    if "--print" in sys.argv:
-        print_combined()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--print", action="store_true", dest="print_sql")
+    parser.add_argument("--only", help="Apply just this exact migration filename; useful for an already provisioned database")
+    args = parser.parse_args()
+    if args.print_sql:
+        print_combined(args.only)
         return
 
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
         sys.exit(
@@ -114,7 +123,7 @@ def main() -> None:
             "  python scripts/apply_migrations.py --print"
         )
 
-    apply_with_psycopg(database_url)
+    apply_with_psycopg(database_url, args.only)
 
 
 if __name__ == "__main__":

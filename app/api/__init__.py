@@ -1,6 +1,6 @@
 """Blueprint registry."""
 
-from app.api import admin, dashboard, escalations, health, metrics, patients, worry
+from app.api import admin, dashboard, escalations, health, metrics, patients, worry, mobile, simulation
 
 BLUEPRINTS = (
     health.bp,
@@ -10,6 +10,8 @@ BLUEPRINTS = (
     escalations.bp,
     metrics.bp,
     admin.bp,
+    mobile.bp,
+    simulation.bp,
 )
 
 __all__ = ["BLUEPRINTS"]

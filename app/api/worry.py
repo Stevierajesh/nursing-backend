@@ -37,7 +37,7 @@ def create_worry():
     try:
         body = WorryCreate.model_validate(request.get_json(silent=True) or {})
     except ValidationError as exc:
-        return jsonify({"error": "Invalid request", "details": exc.errors()}), 422
+        return jsonify({"error": "Invalid request", "details": exc.errors(include_context=False)}), 422
 
     user = g.user
 

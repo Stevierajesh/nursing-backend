@@ -166,6 +166,11 @@ def evaluate_patient(
     return result, escalation
 
 
+def _find_escalation(escalation_id: str, org_id: str) -> dict | None:
+    rows = supabase().table("escalations").select("*").eq("id", escalation_id).eq("org_id", org_id).limit(1).execute().data or []
+    return rows[0] if rows else None
+
+
 def acknowledge(escalation_id: str, org_id: str, actor_id: str) -> dict[str, Any] | None:
     """Someone has seen it. Stops the clock on ack_seconds.
 
@@ -186,7 +191,7 @@ def acknowledge(escalation_id: str, org_id: str, actor_id: str) -> dict[str, Any
         return None
     row = rows[0]
 
-    if row.get("acknowledged_at"):
+    if row.get("acknowledged_at") or row["status"] in ("assessed", "resolved"):
         return row
 
     update = {
@@ -204,10 +209,12 @@ def acknowledge(escalation_id: str, org_id: str, actor_id: str) -> dict[str, Any
         .update(update)
         .eq("id", escalation_id)
         .eq("org_id", org_id)
+        .is_("acknowledged_at", "null")
+        .in_("status", ["open", "acknowledged", "auto_escalated"])
         .execute()
     )
     out = updated.data or []
-    return out[0] if out else None
+    return out[0] if out else _find_escalation(escalation_id, org_id)
 
 
 def assess(
@@ -228,7 +235,7 @@ def assess(
     existing = (
         supabase()
         .table("escalations")
-        .select("acknowledged_at, status")
+        .select("*")
         .eq("id", escalation_id)
         .eq("org_id", org_id)
         .limit(1)
@@ -237,6 +244,8 @@ def assess(
     rows = existing.data or []
     if not rows:
         return None
+    if rows[0].get("assessed_at") or rows[0]["status"] == "resolved":
+        return rows[0]
     if not rows[0].get("acknowledged_at"):
         update["acknowledged_by"] = actor_id
         update["acknowledged_at"] = _iso(now)
@@ -247,10 +256,12 @@ def assess(
         .update(update)
         .eq("id", escalation_id)
         .eq("org_id", org_id)
+        .is_("assessed_at", "null")
+        .in_("status", ["open", "acknowledged", "auto_escalated"])
         .execute()
     )
     out = updated.data or []
-    return out[0] if out else None
+    return out[0] if out else _find_escalation(escalation_id, org_id)
 
 
 def resolve(

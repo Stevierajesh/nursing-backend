@@ -50,10 +50,10 @@ insert into assignments (org_id, nurse_id, patient_id) values
 insert into worry_signals (org_id, patient_id, nurse_id, level, reasons) values
   ('aaaaaaaa-0000-0000-0000-000000000001',
    'aaaaaaaa-2222-0000-0000-000000000001',
-   '22222222-2222-2222-2222-222222222222', 2, '{breathing_off}'),
+   '22222222-2222-2222-2222-222222222222', 4, '{breathing_off}'),
   ('bbbbbbbb-0000-0000-0000-000000000002',
    'bbbbbbbb-2222-0000-0000-000000000003',
-   '44444444-4444-4444-4444-444444444444', 2, '{color}');
+   '44444444-4444-4444-4444-444444444444', 4, '{color}');
 
 -- RLS does not apply to the table owner, so test as `authenticated`.
 

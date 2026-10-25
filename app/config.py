@@ -31,6 +31,16 @@ class Config:
     JWT_AUDIENCE = os.environ.get("JWT_AUDIENCE", "authenticated")
     JWKS_CACHE_SECONDS = int(os.environ.get("JWKS_CACHE_SECONDS", "3600"))
 
+    # Clock skew tolerance for exp/nbf/iat, in seconds.
+    #
+    # Supabase stamps `iat` from its own clock. PyJWT defaults to zero leeway,
+    # so a host running even one second behind Supabase rejects every freshly
+    # issued token with "The token is not yet valid (iat)" -- and because the
+    # skew drifts, it fails intermittently rather than cleanly. 60s is the
+    # conventional allowance; it also covers `exp` at the other end, which is
+    # harmless against Supabase's one-hour access tokens.
+    JWT_LEEWAY_SECONDS = int(os.environ.get("JWT_LEEWAY_SECONDS", "60"))
+
     # How long a resolved profile (org_id + role) is cached in-process. Keeps
     # the hot path to one JWT verification instead of a DB round trip.
     PROFILE_CACHE_SECONDS = int(os.environ.get("PROFILE_CACHE_SECONDS", "60"))

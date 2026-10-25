@@ -109,19 +109,19 @@ def test_very_worried_with_stable_patient_does_not_escalate():
     """The headline rule. A worried nurse plus a rock-stable patient is a
     flag on the board, not a page."""
     stable = [_vitals(i * 60) for i in range(6)]
-    result = compute_risk(stable, [_worry(2)])
+    result = compute_risk(stable, [_worry(4)])
 
     assert result.should_escalate is False
     assert result.rule is None
     # but the worry is still visible in the score
     assert result.worry_component > 0
-    assert result.worry_level == 2
+    assert result.worry_level == 4
 
 
 def test_worry_raises_score_without_escalating():
     stable = [_vitals(i * 60) for i in range(6)]
     without = compute_risk(stable, [])
-    with_worry = compute_risk(stable, [_worry(2)])
+    with_worry = compute_risk(stable, [_worry(4)])
 
     assert with_worry.score > without.score
     assert with_worry.should_escalate is False
@@ -134,7 +134,7 @@ def test_very_worried_plus_drift_escalates():
         _vitals(130, resp_rate=18),
         _vitals(190),
     ]
-    result = compute_risk(drifting, [_worry(2, reasons=["breathing_off"])])
+    result = compute_risk(drifting, [_worry(4, reasons=["breathing_off"])])
 
     assert result.should_escalate is True
     assert result.rule in ("very_worried_plus_drift", "very_worried_plus_news")
@@ -179,8 +179,8 @@ def test_level_zero_worry_is_not_worry():
 
 def test_old_worry_decays():
     stable = [_vitals(i * 60) for i in range(4)]
-    fresh = compute_risk(stable, [_worry(2, minutes_ago=1)])
-    stale = compute_risk(stable, [_worry(2, minutes_ago=720)])  # 12h, 3 half-lives
+    fresh = compute_risk(stable, [_worry(4, minutes_ago=1)])
+    stale = compute_risk(stable, [_worry(4, minutes_ago=720)])  # 12h, 3 half-lives
 
     assert stale.worry_component < fresh.worry_component
     # decayed but not erased -- it still happened
@@ -192,3 +192,34 @@ def test_empty_inputs_are_safe():
     assert result.score == 0.0
     assert result.should_escalate is False
     assert result.latest_news == 0
+
+
+def test_five_worry_levels_have_increasing_intensity():
+    from unittest.mock import patch
+
+    now = datetime.now(timezone.utc)
+    with patch('app.services.risk._now', return_value=now):
+        results = [compute_risk([], [{'level': level, 'created_at': now.isoformat()}]) for level in range(5)]
+    assert [r.worry_component for r in results] == [0, 6.25, 12.5, 18.75, 25]
+    assert all(not r.should_escalate for r in results)
+
+
+def test_intermediate_worry_levels_need_both_objective_signals():
+    # Somewhat/Worried do not inherit the old level-2 "Very worried" rule.
+    for level in (1, 2, 3):
+        elevated_only = compute_risk([{**_vitals(0), "news_score": 5}], [_worry(level)])
+        assert elevated_only.should_escalate is False
+        rising = [{**_vitals(0), "news_score": 5}, {**_vitals(60), "news_score": 4}]
+        assert compute_risk(rising, [_worry(level)]).should_escalate is True
+
+
+def test_worry_validation_accepts_exactly_five_integer_levels():
+    import pytest
+    from pydantic import ValidationError
+    from app.schemas.requests import WorryCreate
+
+    for level in range(5):
+        assert WorryCreate(patient_id='patient', level=level).level == level
+    for level in (-1, 5, 1.5, True, '2'):
+        with pytest.raises(ValidationError):
+            WorryCreate(patient_id='patient', level=level)

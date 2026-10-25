@@ -55,6 +55,9 @@ echo "Installing Supabase shim …"
 
 echo "Applying migrations …"
 for f in "$MIGRATIONS"/*.sql; do
+  if [[ "$f" == *20261024001000_mobile_workflows.sql ]]; then
+    "${PSQL[@]}" -f "$HERE/00_demo_before_mobile.sql"
+  fi
   printf '  %-48s' "$(basename "$f")"
   "${PSQL[@]}" -f "$f" >/dev/null && echo OK
 done
@@ -63,7 +66,14 @@ echo "Loading fixtures (two orgs, so leakage is testable) …"
 "${PSQL[@]}" -f "$HERE/01_fixtures.sql" >/dev/null
 
 echo
+echo "Checking five-level migration and legacy data …"
+"${PSQL[@]}" -f "$HERE/03_five_worry_levels.sql"
+
+echo "Checking mobile workflow constraints and policies …"
+"${PSQL[@]}" -f "$HERE/04_mobile_workflows.sql"
+
 echo "Running policy tests …"
+"${PSQL[@]}" -f "$HERE/05_patient_simulation.sql"
 command psql -h 127.0.0.1 -p "$PORT" -U postgres -d worrytest -q \
   -f "$HERE/02_rls_attacks.sql" 2>&1 \
   | grep -v '^SET$\|^SAVEPOINT$\|^ROLLBACK$\|^DO$\|^BEGIN$\|^RESET$' \
