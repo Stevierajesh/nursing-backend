@@ -14,11 +14,16 @@ from app.auth.middleware import (
     require_role,
 )
 from app.extensions import supabase
-from app.schemas.requests import NurseNoteCreate, PatientAdmission, VitalsCreate
+from app.schemas.requests import (
+    NurseNoteCreate,
+    PatientAdmission,
+    PatientHistoryUpdate,
+    VitalsCreate,
+)
 from app.services.bands import pain_band
 from app.services.escalation import evaluate_patient, recent_vitals, recent_worry
 from app.services.news import news_alert, news_band, news_components, news_score
-from app.services.risk import RULE_LABELS, compute_risk
+from app.services.risk import RULE_LABELS, compute_risk, reaches_physician
 
 bp = Blueprint("patients", __name__, url_prefix="/api/v1/patients")
 
@@ -216,6 +221,15 @@ def _decorate(patients: list[dict]) -> list[dict]:
                 "escalation_rule_label": (
                     RULE_LABELS.get(esc["rule"], esc["rule"]) if esc else None
                 ),
+                # Whether this escalation reached a physician, decided here so
+                # the client never re-implements the rule. A prescriber is
+                # org-wide, so without this the app would have to guess which
+                # escalations it may offer them a response action on, and the
+                # guess would drift from the authorization check that enforces
+                # it.
+                "escalation_reaches_physician": (
+                    reaches_physician(esc.get("rule"), esc.get("status")) if esc else False
+                ),
             }
         )
     return out
@@ -390,6 +404,56 @@ def add_note(patient_id: str):
     if not rows:
         return jsonify({"error": "Failed to record note"}), 500
     return jsonify({"note": rows[0]}), 201
+
+
+@bp.patch("/<patient_id>/history")
+@require_auth
+@require_role("nurse", "charge_nurse", "admin")
+def update_history(patient_id: str):
+    """Record the four history fields behind approval-review section 5.
+
+    Prescriber-writable is omitted for the same reason as nurse notes: the
+    section exists so a physician can read what the ward knows about this
+    patient before deciding, and a physician filling it in themselves turns it
+    into a record of their own assumptions.
+
+    Only the fields actually sent are written, so editing one does not wipe the
+    other three -- see PatientHistoryUpdate for why the three states matter.
+    """
+    try:
+        assert_patient_in_org(patient_id)
+        assert_nurse_assigned(patient_id)
+    except AuthError as exc:
+        return jsonify({"error": exc.message}), exc.status
+
+    try:
+        body = PatientHistoryUpdate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return jsonify({"error": "Invalid request", "details": exc.errors(include_context=False)}), 422
+
+    update = body.model_dump(exclude_unset=True)
+    rows = (
+        supabase()
+        .table("patients")
+        .update(update)
+        .eq("id", patient_id)
+        .eq("org_id", g.user.org_id)
+        .is_("discharged_at", "null")
+        .execute()
+        .data
+    ) or []
+    if not rows:
+        return jsonify({"error": "Patient is no longer active"}), 409
+
+    # Logged with the field names but not their contents: the audit trail
+    # answers "who changed the history and when", and copying free-text
+    # clinical detail into a second table is a needless duplication of it.
+    supabase().table("audit_log").insert({
+        "org_id": g.user.org_id, "actor_id": g.user.id,
+        "action": "patient.history_updated", "target_type": "patient",
+        "target_id": patient_id, "payload": {"fields": sorted(update)},
+    }).execute()
+    return jsonify({"patient": rows[0]})
 
 
 @bp.post("/<patient_id>/vitals")

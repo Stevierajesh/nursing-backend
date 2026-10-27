@@ -18,6 +18,14 @@ class DB:
           'vitals':[dict(id='v1',patient_id='p1',org_id='a',systolic_bp=150,recorded_at='2026-10-24T12:00:00Z')],
           'escalations':[dict(id='e1',patient_id='p1',org_id='a',status='open',acknowledged_at=None,assessed_at=None),dict(id='e2',patient_id='p2',org_id='a',status='open',acknowledged_at=None,assessed_at=None),dict(id='eb',patient_id='pb',org_id='b',status='open')],
           'organizations':[dict(id='a',medication_sla_minutes=15)],
+          # Enough of the real vocabulary for the recommendation rules to
+          # resolve a label. 'ACE inhibitor' is what the stage 2 band maps to,
+          # and p1's charted 150 systolic lands in it.
+          'medication_classes':[
+            dict(id='mc-ace',condition='blood_pressure',label='ACE inhibitor',active=True,sort_order=1,source='UNREVIEWED — placeholder vocabulary'),
+            dict(id='mc-arb',condition='blood_pressure',label='ARB',active=True,sort_order=2,source='UNREVIEWED — placeholder vocabulary'),
+            dict(id='mc-thz',condition='blood_pressure',label='Thiazide diuretic',active=True,sort_order=4,source='UNREVIEWED — placeholder vocabulary'),
+          ],
           'medication_reviews':[],'audit_log':[]}
     def table(self,name):return Query(self,name)
 class Query:
@@ -289,3 +297,143 @@ def test_nurse_and_other_doctor_cannot_approve_prescriptions(env):
     assert c.patch(url, json=prescription_payload()).status_code == 403
     who.update(id='doc2', role='prescriber')
     assert c.patch(url, json=prescription_payload()).status_code == 403
+
+# ---------------------------------------------------------------------------
+# the recommendation, and what the nurse did with it
+# ---------------------------------------------------------------------------
+#
+# p1's only charted observation is systolic 150, which the rules band as
+# ACC/AHA stage 2 and map to 'ACE inhibitor' (mc-ace).
+
+def test_the_recommendation_is_recomputed_on_the_server_not_taken_from_the_client(env):
+    """A client-asserted verdict would make the agreement rate measure the client.
+
+    Same reasoning that keeps escalations.acknowledged_at server-stamped: the
+    one number worth having here is how often the nurse disagrees, and it is
+    worthless if the sender can set it.
+    """
+    c,_,_=env
+    assert send(c,nurse_action='accepted').status_code==422
+    assert send(c,recommended_class_id='mc-arb').status_code==422
+
+def test_sending_the_recommended_class_records_acceptance(env):
+    c,_,_=env
+    row=send(c,suggested_class_id='mc-ace').get_json()['review']
+    assert row['nurse_action']=='accepted'
+    assert row['recommended_class_id']=='mc-ace'
+    assert row['recommended_band']=='high'
+    assert row['recommendation_rules_version']
+
+def test_sending_a_different_class_records_a_counter(env):
+    c,_,_=env
+    row=send(c,suggested_class_id='mc-arb').get_json()['review']
+    assert row['nurse_action']=='countered'
+    # Both sides are kept: what was suggested and what was recommended.
+    assert row['suggested_class_id']=='mc-arb'
+    assert row['recommended_class_id']=='mc-ace'
+
+def test_sending_no_class_against_a_recommendation_is_declined_not_countered(env):
+    """Disagreeing about the drug and disagreeing that a drug is the answer
+    are different findings, and collapsing them inflates the counter rate."""
+    c,_,_=env
+    row=send(c).get_json()['review']
+    assert row['nurse_action']=='declined'
+    assert row['recommended_class_id']=='mc-ace'
+
+def test_a_suggestion_with_no_recommendation_behind_it_is_unprompted(env):
+    c,db,_=env
+    # Take the observation away: no vitals, so the rules have no opinion.
+    db.rows['vitals']=[]
+    row=send(c,suggested_class_id='mc-arb').get_json()['review']
+    assert row['nurse_action']=='unprompted'
+    assert row['recommended_class_id'] is None
+    assert row['recommended_band'] is None
+
+def test_a_free_text_request_with_no_recommendation_records_neither(env):
+    c,db,_=env
+    db.rows['vitals']=[]
+    row=send(c).get_json()['review']
+    assert row['nurse_action']=='none'
+    assert row['recommended_class_id'] is None
+
+def test_the_recommendations_endpoint_is_scoped_to_the_nurses_own_patients(env):
+    """p2 is in the org but not assigned to n1, so it must not appear."""
+    c,_,_=env
+    rows=c.get('/api/v1/medication/recommendations').get_json()['recommendations']
+    assert {r['patient_id'] for r in rows}=={'p1'}
+    bp=[r for r in rows if r['condition']=='blood_pressure']
+    assert len(bp)==1
+    assert bp[0]['class_id']=='mc-ace'
+    assert bp[0]['class_label']=='ACE inhibitor'
+    assert bp[0]['rules_source'].startswith('UNREVIEWED')
+
+def test_an_in_range_patient_produces_no_recommendations(env):
+    c,db,_=env
+    db.rows['vitals']=[dict(id='v2',patient_id='p1',org_id='a',systolic_bp=118,diastolic_bp=74,
+                            heart_rate=72,glucose_mg_dl=96,recorded_at='2026-10-24T12:00:00Z')]
+    assert c.get('/api/v1/medication/recommendations').get_json()['recommendations']==[]
+
+def test_an_unknown_condition_is_rejected_rather_than_ignored(env):
+    c,_,_=env
+    assert c.get('/api/v1/medication/recommendations?condition=potassium').status_code==422
+
+# ---------------------------------------------------------------------------
+# patient history: the write path behind approval-review section 5
+# ---------------------------------------------------------------------------
+
+HIST='/api/v1/patients/p1/history'
+
+def test_history_is_assignment_and_org_scoped(env):
+    c,_,_=env
+    assert c.patch('/api/v1/patients/p2/history',json={'past_history':'COPD'}).status_code==403
+    assert c.patch('/api/v1/patients/pb/history',json={'past_history':'COPD'}).status_code==404
+
+def test_a_prescriber_cannot_write_the_history_they_read(env):
+    """Section 5 is what the ward knows, not what the reader assumes."""
+    c,_,who=env;who.update(id='doc1',role='prescriber')
+    assert c.patch(HIST,json={'past_history':'COPD'}).status_code==403
+
+def test_saving_one_field_leaves_the_others_alone(env):
+    """The bug this guards: editing one field wiping the other three.
+
+    Unsent fields must not be written, which is why the handler uses
+    exclude_unset rather than dumping the whole model.
+    """
+    c,db,_=env
+    c.patch(HIST,json={'past_history':'COPD, hypertension'})
+    c.patch(HIST,json={'home_medications':'Salbutamol inhaler'})
+    row=[r for r in db.rows['patients'] if r['id']=='p1'][0]
+    assert row['past_history']=='COPD, hypertension'
+    assert row['home_medications']=='Salbutamol inhaler'
+    assert 'prior_admissions' not in row
+
+def test_clearing_a_field_records_not_recorded_rather_than_an_empty_string(env):
+    """Null and empty must not collapse: one means nobody asked.
+
+    A blank string would render as a recorded-but-empty history, which reads
+    as "asked, nothing to report" -- the inference this field must not support.
+    """
+    c,db,_=env
+    c.patch(HIST,json={'past_history':'COPD'})
+    c.patch(HIST,json={'past_history':None})
+    assert [r for r in db.rows['patients'] if r['id']=='p1'][0]['past_history'] is None
+    # whitespace is treated the same way, not stored as a value
+    c.patch(HIST,json={'past_history':'   '})
+    assert [r for r in db.rows['patients'] if r['id']=='p1'][0]['past_history'] is None
+
+def test_an_empty_history_update_is_rejected(env):
+    c,_,_=env
+    assert c.patch(HIST,json={}).status_code==422
+
+def test_unknown_history_fields_are_rejected(env):
+    """extra=forbid, so a typo fails loudly instead of being dropped."""
+    c,_,_=env
+    assert c.patch(HIST,json={'past_histry':'COPD'}).status_code==422
+    assert c.patch(HIST,json={'diagnosis':'Pneumonia'}).status_code==422
+
+def test_a_history_update_is_audited_by_field_name_not_content(env):
+    c,db,_=env
+    c.patch(HIST,json={'past_history':'COPD','home_medications':'Inhaler'})
+    entry=[r for r in db.rows['audit_log'] if r['action']=='patient.history_updated'][-1]
+    assert entry['payload']=={'fields':['home_medications','past_history']}
+    assert 'COPD' not in str(entry['payload'])

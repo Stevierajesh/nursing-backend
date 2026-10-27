@@ -6,7 +6,7 @@ from flask import Blueprint, g, jsonify, request
 
 from app.auth.middleware import require_auth, require_role
 from app.extensions import supabase
-from app.services.risk import RULE_LABELS
+from app.services.risk import RULE_LABELS, reaches_physician
 
 from app.api.patients import _decorate
 
@@ -58,13 +58,19 @@ def ranked_patients():
 
 @bp.get("/escalations")
 @require_auth
-@require_role("charge_nurse", "admin")
+@require_role("charge_nurse", "admin", "prescriber")
 def escalation_queue():
     """Live escalation queue with the nurse's own stated reason attached.
 
     Carrying the worry reason through to the responder is the point: "Bed 12,
     NEWS 4 but Maria says his breathing is off" is actionable in a way that a
     bare score is not.
+
+    A prescriber gets the same rows filtered by `reaches_physician()` -- the
+    pairing rules plus anything the nursing tier let breach its SLA. The filter
+    is applied here rather than in the query because it reads two columns
+    together (`rule` and `status`) and PostgREST cannot express the disjunction
+    without a view.
     """
     user = g.user
     status = request.args.getlist("status") or [
@@ -97,6 +103,8 @@ def escalation_queue():
         {**r, "rule_label": RULE_LABELS.get(r["rule"], r["rule"])}
         for r in (resp.data or [])
     ]
+    if user.role == "prescriber":
+        rows = [r for r in rows if reaches_physician(r.get("rule"), r.get("status"))]
     return jsonify({"escalations": rows})
 
 

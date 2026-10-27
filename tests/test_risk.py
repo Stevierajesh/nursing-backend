@@ -12,10 +12,13 @@ import pytest
 from app.services.news import news_band, news_score
 from app.services.risk import (
     NEWS_PAIRING_THRESHOLD,
+    PAIRING_RULES,
+    RULE_LABELS,
     W_TREND,
     W_VITALS,
     compute_risk,
     news_slope,
+    reaches_physician,
     trend_component,
     vitals_component,
 )
@@ -311,3 +314,74 @@ def test_a_well_patient_is_untouched_by_the_single_red_rule():
     result = compute_risk(calm, [])
     assert result.news_alert["single_red_parameters"] == []
     assert not result.should_escalate
+
+
+# ---------------------------------------------------------------------------
+# which escalations reach a physician
+# ---------------------------------------------------------------------------
+#
+# Worry escalations used to stop at the charge nurse's board; the only thing
+# that ever reached a doctor was a medication request. These pin the routing so
+# the product claim -- agreement between a nurse and the vitals gets a
+# physician involved -- keeps having a physician at the end of it.
+
+
+def test_an_objective_only_escalation_does_not_reach_a_physician():
+    """news_high is what the existing early warning system already catches.
+
+    Forwarding it would hand a physician the alarm load the nursing tier
+    exists to absorb, which is the alarm-fatigue problem rather than a fix
+    for it.
+    """
+    assert not reaches_physician("news_high", "open")
+    assert not reaches_physician("news_single_red", "open")
+    assert not reaches_physician("news_single_red", "acknowledged")
+
+
+def test_every_pairing_rule_reaches_a_physician():
+    for rule in PAIRING_RULES:
+        assert reaches_physician(rule, "open"), rule
+
+
+def test_an_unanswered_escalation_reaches_a_physician_whatever_fired_it():
+    """The second level has to reach past the tier that already did not answer.
+
+    An auto_escalated row means the nursing tier was given its SLA window and
+    let it lapse. If that still only went to the same board, there would be no
+    second level.
+    """
+    assert reaches_physician("news_high", "auto_escalated")
+    assert reaches_physician("news_single_red", "auto_escalated")
+
+
+def test_the_pairing_rules_are_exactly_the_rules_that_need_worry():
+    """PAIRING_RULES must not drift from _decide_escalation's worry branches.
+
+    A rule added to the fusion without being added here would silently never
+    reach a physician; one removed would route on a rule that no longer exists.
+    """
+    worry_rules = {
+        rule
+        for rule in RULE_LABELS
+        if "worried" in rule
+    }
+    assert PAIRING_RULES == worry_rules
+
+
+def test_a_very_worried_nurse_with_a_drifting_patient_reaches_a_physician():
+    """The end-to-end version of the claim, through compute_risk."""
+    climbing = [
+        _vitals(m, resp_rate=22 - m // 30, spo2=93 + m // 60)
+        for m in range(0, 300, 20)
+    ]
+    result = compute_risk(climbing, [_worry(4, reasons=["breathing_off"])])
+    assert result.should_escalate
+    assert result.rule in PAIRING_RULES
+    assert reaches_physician(result.rule, "open")
+
+
+def test_a_worried_nurse_with_a_stable_patient_reaches_nobody():
+    calm = [_vitals(m) for m in range(0, 300, 20)]
+    result = compute_risk(calm, [_worry(4)])
+    assert not result.should_escalate
+    assert not reaches_physician(result.rule, None)

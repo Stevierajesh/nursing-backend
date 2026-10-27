@@ -151,6 +151,46 @@ class NurseNoteCreate(BaseModel):
     body: str = Field(min_length=1, max_length=4000)
 
 
+class PatientHistoryUpdate(BaseModel):
+    """The four free-text history fields behind approval-review section 5.
+
+    Read with `model_dump(exclude_unset=True)`, because three states have to
+    survive the round trip and only two of them are values:
+
+      * field omitted   -> leave whatever is recorded alone
+      * field = null    -> clear it back to "not recorded"
+      * field = text    -> record that text
+
+    Collapsing the first two would mean every edit to one field silently wiped
+    the other three. Same null discipline as `allergies`: absent is "nobody
+    asked", never "nothing to report", and a prescriber ticking "I have read
+    this section" has to be able to tell those apart.
+    """
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    past_history: str | None = Field(default=None, max_length=4000)
+    home_medications: str | None = Field(default=None, max_length=4000)
+    prior_admissions: str | None = Field(default=None, max_length=4000)
+    past_responses: str | None = Field(default=None, max_length=4000)
+
+    @model_validator(mode="after")
+    def at_least_one_field(self):
+        if not self.model_fields_set:
+            raise ValueError("Send at least one history field to update")
+        return self
+
+    @field_validator(
+        "past_history", "home_medications", "prior_admissions", "past_responses"
+    )
+    @classmethod
+    def _blank_is_not_recorded(cls, v: str | None) -> str | None:
+        # "   " would otherwise be stored as a value and render as a recorded
+        # but empty history, which reads as "asked and there is nothing" --
+        # exactly the inference this field must not support.
+        return None if v is not None and not v.strip() else v
+
+
 class MedicationReviewCreate(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     patient_id: str

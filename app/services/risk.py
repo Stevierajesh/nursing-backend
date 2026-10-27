@@ -290,3 +290,39 @@ RULE_LABELS = {
     "worried_plus_drift_and_news": "Nurse worried + NEWS ≥5 and drifting",
     "sla_breach": "No reassessment within SLA window",
 }
+
+
+# ---------------------------------------------------------------------------
+# who an escalation reaches
+# ---------------------------------------------------------------------------
+
+# The rules where human judgement and measured data agreed. These are the only
+# rules that reach a physician on their own, and the distinction is the whole
+# precision argument: `news_high` and `news_single_red` fire on observations
+# alone and are what the existing early-warning system already catches, so
+# forwarding them to a physician would hand them the alarm load the nursing
+# tier exists to absorb. A pairing rule means two independent channels -- a
+# nurse at the bedside and a NEWS2 score -- arrived at the same conclusion.
+PAIRING_RULES = frozenset(
+    {
+        "very_worried_plus_drift",
+        "very_worried_plus_news",
+        "worried_plus_drift_and_news",
+    }
+)
+
+
+def reaches_physician(rule: str | None, status: str | None) -> bool:
+    """True if this escalation belongs in a prescriber's queue.
+
+    Two ways in, and they mean different things:
+
+      * a pairing rule -- nurse concern and vitals agreed, so a physician is
+        wanted now rather than after the nursing tier has had its window;
+      * `auto_escalated` on any rule -- the nursing tier was given its SLA and
+        did not answer. That is the second level, and it has to reach past the
+        people who already did not respond or it is not a second level at all.
+    """
+    if status == "auto_escalated":
+        return True
+    return rule in PAIRING_RULES

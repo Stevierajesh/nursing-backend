@@ -14,15 +14,23 @@ from app.auth.middleware import require_auth, require_role, assert_nurse_assigne
 from app.extensions import supabase
 from app.schemas.requests import EscalationAction
 from app.services import escalation as svc
+from app.services.risk import reaches_physician
 
 bp = Blueprint("escalations", __name__, url_prefix="/api/v1/escalations")
 
 
 def _authorize_response(escalation_id):
-    rows = supabase().table("escalations").select("patient_id").eq("id", escalation_id).eq("org_id", g.user.org_id).execute().data or []
+    rows = supabase().table("escalations").select("patient_id, rule, status").eq("id", escalation_id).eq("org_id", g.user.org_id).execute().data or []
     if not rows:
         return jsonify({"error": "Escalation not found"}), 404
-    assert_nurse_assigned(rows[0]["patient_id"])
+    row = rows[0]
+    # A prescriber may only answer what actually reached them. Without this
+    # check the role is org-wide, so a physician could acknowledge an
+    # objective-only escalation that was never routed to them -- stopping the
+    # nursing tier's clock on a response nobody asked them for.
+    if g.user.role == "prescriber" and not reaches_physician(row.get("rule"), row.get("status")):
+        return jsonify({"error": "This escalation has not been escalated to a physician"}), 403
+    assert_nurse_assigned(row["patient_id"])
     return None
 
 
@@ -53,7 +61,7 @@ def _audit(action: str, escalation_id: str, payload: dict) -> None:
 
 @bp.post("/<escalation_id>/acknowledge")
 @require_auth
-@require_role("nurse", "charge_nurse", "admin")
+@require_role("nurse", "charge_nurse", "admin", "prescriber")
 def acknowledge(escalation_id: str):
     user = g.user
     err = _authorize_response(escalation_id)
@@ -68,7 +76,7 @@ def acknowledge(escalation_id: str):
 
 @bp.post("/<escalation_id>/assess")
 @require_auth
-@require_role("nurse", "charge_nurse", "admin")
+@require_role("nurse", "charge_nurse", "admin", "prescriber")
 def assess(escalation_id: str):
     body, err = _body()
     if err:
