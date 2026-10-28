@@ -28,6 +28,15 @@ class DB:
           ],
           'medication_reviews':[],'audit_log':[]}
     def table(self,name):return Query(self,name)
+    def rpc(self,name,params):
+        assert name == 'latest_patient_risks'
+        rows = []
+        for pid in set(params['p_patients']):
+            matches = [r for r in self.rows.get('risk_scores', [])
+                       if r['patient_id'] == pid and r['org_id'] == params['p_org']]
+            if matches:
+                rows.append(max(matches, key=lambda r:r['computed_at']))
+        return SimpleNamespace(execute=lambda:SimpleNamespace(data=deepcopy(rows)))
 class Query:
     def __init__(self,db,name):self.db=db;self.name=name;self.filters=[];self.mode='select';self.payload={};self.maximum=None
     def select(self,*args,**kw):return self
@@ -323,6 +332,25 @@ def test_sending_the_recommended_class_records_acceptance(env):
     assert row['recommended_class_id']=='mc-ace'
     assert row['recommended_band']=='high'
     assert row['recommendation_rules_version']
+
+@pytest.mark.parametrize('condition,observation', [
+    ('blood_pressure', {'systolic_bp':74, 'diastolic_bp':52}),
+    ('blood_sugar', {'glucose_mg_dl':55}),
+    ('heart_rate', {'heart_rate':42}),
+])
+def test_low_readings_can_be_sent_without_a_medication_class(env, condition, observation):
+    c,db,_=env
+    db.rows['vitals']=[dict(id='low-vital',patient_id='p1',org_id='a',
+        recorded_at='2026-10-27T12:00:00Z',**observation)]
+    result=send(c,condition=condition)
+    assert result.status_code==201
+    row=result.get_json()['review']
+    assert row['recommended_band']=='low'
+    assert row['recommended_class_id'] is None
+    assert row['suggested_class_id'] is None
+    assert row['nurse_action']=='none'
+    assert row['recommendation_rules_version']
+    assert all(row['vitals_snapshot'][key]==value for key,value in observation.items())
 
 def test_sending_a_different_class_records_a_counter(env):
     c,_,_=env

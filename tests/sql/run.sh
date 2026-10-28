@@ -73,6 +73,7 @@ echo "Checking mobile workflow constraints and policies …"
 "${PSQL[@]}" -f "$HERE/04_mobile_workflows.sql"
 
 echo "Running policy tests …"
+"${PSQL[@]}" -f "$HERE/08_medication_low_and_latest_risk.sql"
 "${PSQL[@]}" -f "$HERE/05_patient_simulation.sql"
 command psql -h 127.0.0.1 -p "$PORT" -U postgres -d worrytest -q \
   -f "$HERE/02_rls_attacks.sql" 2>&1 \

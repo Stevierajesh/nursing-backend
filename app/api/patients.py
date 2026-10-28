@@ -58,20 +58,16 @@ def admit_patient():
 def _latest_risk_map(patient_ids: list[str]) -> dict[str, dict]:
     """Most recent risk score per patient.
 
-    Supabase/PostgREST has no DISTINCT ON, so we over-fetch recent rows and
-    keep the first occurrence per patient. Bounded by the patient count, which
-    on a hospital unit is tens, not thousands.
+    The RPC performs an indexed LIMIT 1 per patient. A global history sort
+    timed out as simulations grew, and its global limit could omit patients
+    whose most recent score was older than another patient's history.
     """
     if not patient_ids:
         return {}
 
     resp = (
         supabase()
-        .table("risk_scores")
-        .select("*")
-        .in_("patient_id", patient_ids)
-        .order("computed_at", desc=True)
-        .limit(max(len(patient_ids) * 5, 50))
+        .rpc("latest_patient_risks", {"p_org": g.user.org_id, "p_patients": patient_ids})
         .execute()
     )
 
